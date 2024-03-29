@@ -264,26 +264,58 @@ func (u *Update) installFile(dirPath string) error {
 	}
 	pathPerm := fmt.Sprintf("%04o", info.Mode().Perm())
 
+	// Copy temp file in the plasmactl folder.
+	src, err := os.Open(u.fTmpPath)
+	if err != nil {
+		return err
+	}
+
 	// Set temp permissions for the folder with plasmactl.
-	cmd := exec.Command("sudo", "chmod", "777", u.fDir)
-	if err := cmd.Run(); err != nil {
-		log.Debug("Error to set %s folder permissions", u.fDir)
+	if err = u.setFolderPermissions("777", u.fDir); err != nil {
 		return err
 	}
 
-	// Creating tmp file in plasmactl folder.
-	if err := os.Rename(u.fTmpPath, u.fPath); err != nil {
-		log.Debug("Error replacing plasmactl bin file with new version.", u.fDir)
+	fTmpName := u.fPath + ".tmp"
+	dst, err := os.Create(fTmpName)
+	if err != nil {
+		src.Close()
+		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
 
+	_, err = io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	if err != nil {
+		u.setFolderPermissions(pathPerm, u.fDir)
+		return err
+	}
+
+	// Rename temp file to plasmactl.
+	if err = os.Rename(fTmpName, u.fPath); err != nil {
+		log.Debug("Failed to rename temp file.")
+		u.setFolderPermissions(pathPerm, u.fDir)
+		return err
+	}
+
+	// Set plasmactl permissions.
+	if err = u.setFolderPermissions("755", u.fPath); err != nil {
+		return err
+	}
 	// Get back folder permissions.
-	cmd = exec.Command("sudo", "chmod", pathPerm, u.fDir)
-	if err := cmd.Run(); err != nil {
-		log.Debug("Error to set back %s folder permissions", u.fDir)
+	if err = u.setFolderPermissions(pathPerm, u.fDir); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func (u *Update) setFolderPermissions(pathPerm, fPath string) error {
+	cmd := exec.Command("sudo", "chmod", pathPerm, fPath)
+	if err := cmd.Run(); err != nil {
+		log.Debug("Error to set back %s folder permissions", fPath)
+		return err
+	}
 	return nil
 }
 
