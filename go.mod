@@ -3,6 +3,7 @@ module github.com/skilld-labs/plasmactl-update
 go 1.21.6
 
 require (
+	github.com/google/renameio v1.0.1
 	github.com/launchrctl/keyring v0.1.1
 	github.com/launchrctl/launchr v0.6.0
 	github.com/spf13/cobra v1.8.0

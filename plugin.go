@@ -114,31 +114,31 @@ func runCommands(u *Update) error {
 	envPath := os.Getenv("PATH")
 	log.Debug("PATH env var = %s\n", envPath)
 
-	binPath := u.getBinPath(envPath, homeDir)
-	log.Debug("Binary path = %s\n", binPath)
+	u.setBinPath(envPath, homeDir)
+	log.Debug("Binary path = %s\n", u.fDir)
 
 	// Installing binary.
-	if binPath != "" {
+	if u.fDir != "" {
 		// PATH is defined and includes dir where we can move binary.
-		if err = u.installFile(binPath); err != nil {
+		if err = u.installFile(u.fDir); err != nil {
 			return err
 		}
 	} else {
 		// PATH is either undefined, empty or does not contain bin path.
-		cli.Println("PATH var does not contain %s", binPath)
-		binPath = filepath.Join(homeDir, ".plasmactl")
-		cli.Println("Creating %s directory\n", binPath)
+		cli.Println("PATH var does not contain %s", u.fDir)
+		u.fDir = filepath.Join(homeDir, ".plasmactl")
+		cli.Println("Creating %s directory\n", u.fDir)
 
-		if err = os.MkdirAll(binPath, 0750); err != nil {
+		if err = os.MkdirAll(u.fDir, 0750); err != nil {
 			return err
 		}
-		if err = u.installFile(binPath); err != nil {
+		if err = u.installFile(u.fDir); err != nil {
 			return err
 		}
 
 		// Set hints to set up PATH variable.
-		if !strings.Contains(envPath, binPath) {
-			cli.Println("%s is not in $PATH.", binPath)
+		if !strings.Contains(envPath, u.fDir) {
+			cli.Println("%s is not in $PATH.", u.fDir)
 		}
 	}
 
@@ -171,7 +171,8 @@ func isUpToDate(fName, sr string) bool {
 		if (gV[0] > cV[0]) || (gV[0] == cV[0] && gV[1] > cV[1]) || (gV[0] == cV[0] && gV[1] == cV[1] && gV[2] > cV[2]) {
 			return false
 		}
-
+	} else {
+		return false
 	}
 
 	return true
