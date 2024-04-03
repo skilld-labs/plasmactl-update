@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -21,11 +22,12 @@ type Update struct {
 	fName    string
 	fTmpPath string
 	fPath    string
+	fDir     string
 }
 
 // CreateUpdate instance.
 func CreateUpdate(cr keyring.CredentialsItem) (*Update, error) {
-	return &Update{cr, "", "", "", ""}, nil
+	return &Update{cr, "", "", "", "", ""}, nil
 }
 
 // Errors.
@@ -218,46 +220,81 @@ func (u *Update) downloadFile() error {
 	return nil
 }
 
-// getBinPath get bin folder path.
-func (u *Update) getBinPath(envPath, homeDir string) string {
-	binPath := ""
-
+// setBinPath get bin folder path.
+func (u *Update) setBinPath(envPath, homeDir string) {
 	if strings.Contains(envPath, homeDir+"/.global/bin") {
-		binPath = filepath.Join(homeDir, ".global/bin")
+		u.fDir = filepath.Join(homeDir, ".global/bin")
 	} else if strings.Contains(envPath, homeDir+"/.local/bin") {
-		binPath = filepath.Join(homeDir, ".local/bin")
+		u.fDir = filepath.Join(homeDir, ".local/bin")
 	} else if strings.Contains(envPath, "/usr/local/bin") {
-		binPath = "/usr/local/bin"
+		u.fDir = "/usr/local/bin"
 	}
 
-	u.fPath = strings.TrimSpace(filepath.Join(binPath, u.fName))
-	return binPath
+	u.fPath = strings.TrimSpace(filepath.Join(u.fDir, u.fName))
 }
 
 // installFile copy file to the bin folder and remove temp file.
 func (u *Update) installFile(dirPath string) error {
 	cli.Println("Installing %s binary under %s", u.fName, dirPath)
 
-	srcFile, err := os.Open(u.fTmpPath)
+	info, err := os.Stat(u.fDir)
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	pathPerm := fmt.Sprintf("%04o", info.Mode().Perm())
 
-	destFile, err := os.Create(u.fPath)
+	// Copy temp file in the plasmactl folder.
+	src, err := os.Open(u.fTmpPath)
 	if err != nil {
 		return err
 	}
-	defer destFile.Close()
 
-	if _, err = io.Copy(destFile, srcFile); err != nil {
+	// Set temp permissions for the folder with plasmactl.
+	if err = u.setFolderPermissions("777", u.fDir); err != nil {
 		return err
 	}
 
-	if err = os.Remove(u.fTmpPath); err != nil {
+	fTmpName := u.fPath + ".tmp"
+	dst, err := os.Create(fTmpName)
+	if err != nil {
+		src.Close()
+		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
 
+	_, err = io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	if err != nil {
+		u.setFolderPermissions(pathPerm, u.fDir)
+		return err
+	}
+
+	// Rename temp file to plasmactl.
+	if err = os.Rename(fTmpName, u.fPath); err != nil {
+		log.Debug("Failed to rename temp file.")
+		u.setFolderPermissions(pathPerm, u.fDir)
+		return err
+	}
+
+	// Set plasmactl permissions.
+	if err = u.setFolderPermissions("755", u.fPath); err != nil {
+		return err
+	}
+	// Get back folder permissions.
+	if err = u.setFolderPermissions(pathPerm, u.fDir); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (u *Update) setFolderPermissions(pathPerm, fPath string) error {
+	cmd := exec.Command("sudo", "chmod", pathPerm, fPath)
+	if err := cmd.Run(); err != nil {
+		log.Debug("Error to set back %s folder permissions", fPath)
+		return err
+	}
 	return nil
 }
 
