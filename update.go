@@ -17,6 +17,7 @@ import (
 
 // Update stored update definition.
 type Update struct {
+	k        keyring.Keyring
 	c        keyring.CredentialsItem
 	ext      string
 	fName    string
@@ -26,15 +27,16 @@ type Update struct {
 }
 
 // CreateUpdate instance.
-func CreateUpdate(cr keyring.CredentialsItem) (*Update, error) {
-	return &Update{cr, "", "", "", "", ""}, nil
+func CreateUpdate(kr keyring.Keyring, cr keyring.CredentialsItem) (*Update, error) {
+	return &Update{k: kr, c: cr}, nil
 }
 
 // Errors.
 var (
-	errUnsupportedOS   = errors.New("unsupported operating system")
-	errUnsupportedArch = errors.New("unsupported architecture")
-	errInvalidCreds    = errors.New("failed to validate credentials")
+	errUnsupportedOS    = errors.New("unsupported operating system")
+	errUnsupportedArch  = errors.New("unsupported architecture")
+	errInvalidCreds     = errors.New("failed to validate credentials")
+	errMalformedKeyring = errors.New("the k is malformed or wrong passphrase provided")
 )
 
 // Define the URL pattern for the file.
@@ -79,19 +81,38 @@ func (u *Update) initVars() (string, string, error) {
 
 // getCreds stores username and password credentials.
 func (u *Update) getCreds() error {
-	if u.c.Username != "" && u.c.Password != "" {
-		return nil
+	repoUrl := fmt.Sprintf("%s/%s", BaseUrl, releasePath)
+	log.Debug("Source url of release: %s\n", repoUrl)
+
+	// Get credentials and save in keyring.
+	ci, err := u.k.GetForURL(repoUrl)
+	if err != nil {
+		if errors.Is(err, keyring.ErrEmptyPass) {
+			return err
+		} else if !errors.Is(err, keyring.ErrNotFound) {
+			log.Debug("%s", err)
+			return errMalformedKeyring
+		}
+
+		ci.URL = repoUrl
+		if ci.URL != "" {
+			cli.Println("Enter credentials for %s", ci.URL)
+		}
+
+		if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
+			return err
+		}
+
+		if err = u.k.AddItem(ci); err != nil {
+			return err
+		}
+
+		err = u.k.Save()
 	}
 
-	if u.c.URL != "" {
-		cli.Println("Enter credentials for %s", u.c.URL)
-	}
-
-	if err := keyring.RequestCredentialsFromTty(&u.c); err != nil {
-		return err
-	}
-
-	return nil
+	// Set credentials.
+	u.c = ci
+	return err
 }
 
 // getOS check operating system supports and set extension package file.

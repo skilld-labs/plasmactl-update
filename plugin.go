@@ -20,7 +20,9 @@ func init() {
 }
 
 // Plugin is launchr plugin providing update action.
-type Plugin struct{}
+type Plugin struct {
+	k keyring.Keyring
+}
 
 // PluginInfo implements launchr.Plugin interface.
 func (p *Plugin) PluginInfo() launchr.PluginInfo {
@@ -28,21 +30,21 @@ func (p *Plugin) PluginInfo() launchr.PluginInfo {
 }
 
 // OnAppInit implements launchr.Plugin interface.
-func (p *Plugin) OnAppInit(_ launchr.App) error {
+func (p *Plugin) OnAppInit(app launchr.App) error {
+	app.GetService(&p.k)
 	return nil
 }
 
 // CobraAddCommands implements launchr.CobraPlugin interface to provide bump functionality.
 func (p *Plugin) CobraAddCommands(rootCmd *cobra.Command) error {
-	var creds keyring.CredentialsItem
-
+	var cr keyring.CredentialsItem
 	var updCmd = &cobra.Command{
 		Use:   "update",
 		Short: "Command to fetch and install latest version of plasmactl",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Don't show usage help on a runtime error.
 			cmd.SilenceUsage = true
-			u, err := CreateUpdate(creds)
+			u, err := CreateUpdate(p.k, cr)
 			if err != nil {
 				return err
 			}
@@ -52,9 +54,9 @@ func (p *Plugin) CobraAddCommands(rootCmd *cobra.Command) error {
 	}
 
 	// Credentials flags
-	creds.URL = BaseUrl
-	updCmd.Flags().StringVarP(&creds.Username, "username", "u", "", "Username")
-	updCmd.Flags().StringVarP(&creds.Password, "password", "p", "", "Password")
+	cr.URL = BaseUrl
+	updCmd.Flags().StringVarP(&cr.Username, "username", "u", "", "Username")
+	updCmd.Flags().StringVarP(&cr.Password, "password", "p", "", "Password")
 	rootCmd.AddCommand(updCmd)
 
 	return nil
