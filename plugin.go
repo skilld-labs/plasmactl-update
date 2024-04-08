@@ -3,16 +3,17 @@ package plasmactlupdate
 
 import (
 	"fmt"
-	"github.com/launchrctl/keyring"
-	"github.com/launchrctl/launchr"
-	"github.com/launchrctl/launchr/pkg/cli"
-	"github.com/launchrctl/launchr/pkg/log"
-	"github.com/spf13/cobra"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/launchrctl/keyring"
+	"github.com/launchrctl/launchr"
+	"github.com/launchrctl/launchr/pkg/cli"
+	"github.com/launchrctl/launchr/pkg/log"
+	"github.com/spf13/cobra"
 )
 
 func init() {
@@ -26,7 +27,9 @@ type Plugin struct {
 
 // PluginInfo implements launchr.Plugin interface.
 func (p *Plugin) PluginInfo() launchr.PluginInfo {
-	return launchr.PluginInfo{}
+	return launchr.PluginInfo{
+		Weight: 20,
+	}
 }
 
 // OnAppInit implements launchr.Plugin interface.
@@ -37,14 +40,15 @@ func (p *Plugin) OnAppInit(app launchr.App) error {
 
 // CobraAddCommands implements launchr.CobraPlugin interface to provide bump functionality.
 func (p *Plugin) CobraAddCommands(rootCmd *cobra.Command) error {
-	var cr keyring.CredentialsItem
+	var ci keyring.CredentialsItem
+
 	var updCmd = &cobra.Command{
 		Use:   "update",
 		Short: "Command to fetch and install latest version of plasmactl",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Don't show usage help on a runtime error.
 			cmd.SilenceUsage = true
-			u, err := CreateUpdate(p.k, cr)
+			u, err := createUpdateAction(p.k, ci)
 			if err != nil {
 				return err
 			}
@@ -54,16 +58,16 @@ func (p *Plugin) CobraAddCommands(rootCmd *cobra.Command) error {
 	}
 
 	// Credentials flags
-	cr.URL = BaseUrl
-	updCmd.Flags().StringVarP(&cr.Username, "username", "u", "", "Username")
-	updCmd.Flags().StringVarP(&cr.Password, "password", "p", "", "Password")
+	ci.URL = baseURL
+	updCmd.Flags().StringVarP(&ci.Username, "username", "u", "", "Username")
+	updCmd.Flags().StringVarP(&ci.Password, "password", "p", "", "Password")
 	rootCmd.AddCommand(updCmd)
 
 	return nil
 }
 
 // runUpdate command entrypoint.
-func runUpdate(u *Update) error {
+func runUpdate(u *updateAction) error {
 	// Wrapper to conclude errors.
 	if err := runCommands(u); err != nil {
 		u.exitWithError()
@@ -74,7 +78,7 @@ func runUpdate(u *Update) error {
 }
 
 // runCommands run commands one by one.
-func runCommands(u *Update) error {
+func runCommands(u *updateAction) error {
 	cli.Println("Starting plasmactl installation...")
 
 	currOS, arch, err := u.initVars()
@@ -100,7 +104,7 @@ func runCommands(u *Update) error {
 	}
 
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	u.c.URL = fmt.Sprintf(binPathMask, BaseUrl, sr, currOS, arch, u.ext)
+	u.c.URL = fmt.Sprintf(binPathMask, baseURL, sr, currOS, arch, u.ext)
 	cli.Println("Downloading file: %s", u.c.URL)
 
 	// Download file to the temp folder.
