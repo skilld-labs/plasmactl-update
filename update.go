@@ -3,9 +3,6 @@ package plasmactlupdate
 import (
 	"errors"
 	"fmt"
-	"github.com/launchrctl/keyring"
-	"github.com/launchrctl/launchr/pkg/cli"
-	"github.com/launchrctl/launchr/pkg/log"
 	"io"
 	"net/http"
 	"os"
@@ -13,10 +10,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/launchrctl/keyring"
+	"github.com/launchrctl/launchr/pkg/cli"
+	"github.com/launchrctl/launchr/pkg/log"
 )
 
-// Update stored update definition.
-type Update struct {
+type updateAction struct {
+	k        keyring.Keyring
 	c        keyring.CredentialsItem
 	ext      string
 	fName    string
@@ -25,29 +26,30 @@ type Update struct {
 	fDir     string
 }
 
-// CreateUpdate instance.
-func CreateUpdate(cr keyring.CredentialsItem) (*Update, error) {
-	return &Update{cr, "", "", "", "", ""}, nil
+// createUpdateAction instance.
+func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem) (*updateAction, error) {
+	return &updateAction{k: kr, c: cr}, nil
 }
 
 // Errors.
 var (
-	errUnsupportedOS   = errors.New("unsupported operating system")
-	errUnsupportedArch = errors.New("unsupported architecture")
-	errInvalidCreds    = errors.New("failed to validate credentials")
+	errUnsupportedOS    = errors.New("unsupported operating system")
+	errUnsupportedArch  = errors.New("unsupported architecture")
+	errInvalidCreds     = errors.New("failed to validate credentials")
+	errMalformedKeyring = errors.New("the keyring is malformed or wrong passphrase provided")
 )
 
 // Define the URL pattern for the file.
 const (
-	BaseUrl     = "https://repositories.skilld.cloud/repository/pla-plasmactl-raw"
+	baseURL     = "https://repositories.skilld.cloud/repository/pla-plasmactl-raw"
 	releasePath = "stable_release"
 	binPathMask = "%s/%s/plasmactl_%s_%s%s"
 )
 
 // initVars initialize plugin variables.
-func (u *Update) initVars() (string, string, error) {
+func (u *updateAction) initVars() (string, string, error) {
 	// Get username and password.
-	if err := u.getCreds(); err != nil {
+	if err := u.getCredentials(); err != nil {
 		return "", "", err
 	}
 
@@ -57,7 +59,7 @@ func (u *Update) initVars() (string, string, error) {
 		return "", "", err
 	}
 
-	// Set Update vars.
+	// Set updateAction vars.
 	u.fName = fmt.Sprintf("plasmactl%s", u.ext)
 	u.fTmpPath = filepath.Join(os.TempDir(), u.fName)
 
@@ -67,7 +69,7 @@ func (u *Update) initVars() (string, string, error) {
 		return "", "", err
 	}
 
-	u.c.URL = fmt.Sprintf("%s/%s", BaseUrl, releasePath)
+	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
 
 	log.Debug("OS = %s\n", currOS)
 	log.Debug("Arch = %s\n", arch)
@@ -77,25 +79,44 @@ func (u *Update) initVars() (string, string, error) {
 	return currOS, arch, nil
 }
 
-// getCreds stores username and password credentials.
-func (u *Update) getCreds() error {
-	if u.c.Username != "" && u.c.Password != "" {
-		return nil
+// getCredentials stores username and password credentials.
+func (u *updateAction) getCredentials() error {
+	repoURL := fmt.Sprintf("%s/%s", baseURL, releasePath)
+	log.Debug("Source url of release: %s\n", repoURL)
+
+	// Get credentials and save in keyring.
+	ci, err := u.k.GetForURL(repoURL)
+	if err != nil {
+		if errors.Is(err, keyring.ErrEmptyPass) {
+			return err
+		} else if !errors.Is(err, keyring.ErrNotFound) {
+			log.Debug("%s", err)
+			return errMalformedKeyring
+		}
+
+		ci.URL = repoURL
+		ci.Username = u.c.Username
+		ci.Password = u.c.Password
+		if ci.Username == "" || ci.Password == "" {
+			cli.Println("Enter credentials for %s", ci.URL)
+			if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
+				return err
+			}
+		}
+
+		if err = u.k.AddItem(ci); err != nil {
+			return err
+		}
+
+		err = u.k.Save()
 	}
 
-	if u.c.URL != "" {
-		cli.Println("Enter credentials for %s", u.c.URL)
-	}
-
-	if err := keyring.RequestCredentialsFromTty(&u.c); err != nil {
-		return err
-	}
-
-	return nil
+	u.c = ci
+	return err
 }
 
 // getOS check operating system supports and set extension package file.
-func (u *Update) getOS() (os string, err error) {
+func (u *updateAction) getOS() (os string, err error) {
 	os = runtime.GOOS
 
 	if os == "windows" {
@@ -113,14 +134,14 @@ func getArch() (arch string, err error) {
 
 	if arch == "amd64" || arch == "386" || arch == "arm64" {
 		return arch, nil
-	} else {
-		cli.Println("Unsupported architecture: %s", arch)
-		return "", errUnsupportedArch
 	}
+
+	cli.Println("Unsupported architecture: %s", arch)
+	return "", errUnsupportedArch
 }
 
 // validateCredentials make request to validate credentials and return HTTP status code.
-func (u *Update) validateCredentials() error {
+func (u *updateAction) validateCredentials() error {
 	r, err := u.sendRequest()
 	if err != nil {
 		return err
@@ -151,7 +172,7 @@ func (u *Update) validateCredentials() error {
 }
 
 // sendRequest send HTTP request, make authorization and return response.
-func (u *Update) sendRequest() (*http.Response, error) {
+func (u *updateAction) sendRequest() (*http.Response, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", u.c.URL, nil)
 	if err != nil {
@@ -168,7 +189,7 @@ func (u *Update) sendRequest() (*http.Response, error) {
 }
 
 // getStableRelease send request and get stable release version.
-func (u *Update) getStableRelease() (string, error) {
+func (u *updateAction) getStableRelease() (string, error) {
 	resp, err := u.sendRequest()
 
 	if err != nil {
@@ -189,7 +210,7 @@ func (u *Update) getStableRelease() (string, error) {
 }
 
 // downloadFile Download the file using with Basic Auth header.
-func (u *Update) downloadFile() error {
+func (u *updateAction) downloadFile() error {
 	resp, err := u.sendRequest()
 	if err != nil {
 		return err
@@ -221,7 +242,7 @@ func (u *Update) downloadFile() error {
 }
 
 // setBinPath get bin folder path.
-func (u *Update) setBinPath(envPath, homeDir string) {
+func (u *updateAction) setBinPath(envPath, homeDir string) {
 	if strings.Contains(envPath, homeDir+"/.global/bin") {
 		u.fDir = filepath.Join(homeDir, ".global/bin")
 	} else if strings.Contains(envPath, homeDir+"/.local/bin") {
@@ -234,7 +255,7 @@ func (u *Update) setBinPath(envPath, homeDir string) {
 }
 
 // installFile copy file to the bin folder and remove temp file.
-func (u *Update) installFile(dirPath string) error {
+func (u *updateAction) installFile(dirPath string) error {
 	cli.Println("Installing %s binary under %s", u.fName, dirPath)
 
 	info, err := os.Stat(u.fDir)
@@ -248,6 +269,7 @@ func (u *Update) installFile(dirPath string) error {
 	if err != nil {
 		return err
 	}
+	defer src.Close()
 
 	// Set temp permissions for the folder with plasmactl.
 	if err = u.setFolderPermissions("777", u.fDir); err != nil {
@@ -255,16 +277,14 @@ func (u *Update) installFile(dirPath string) error {
 	}
 
 	fTmpName := u.fPath + ".tmp"
-	dst, err := os.Create(fTmpName)
+	dst, err := os.Create(filepath.Clean(fTmpName))
 	if err != nil {
-		src.Close()
 		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
+	defer dst.Close()
 
 	_, err = io.Copy(dst, src)
-	src.Close()
-	dst.Close()
 	if err != nil {
 		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
@@ -289,7 +309,7 @@ func (u *Update) installFile(dirPath string) error {
 	return nil
 }
 
-func (u *Update) setFolderPermissions(pathPerm, fPath string) error {
+func (u *updateAction) setFolderPermissions(pathPerm, fPath string) error {
 	cmd := exec.Command("sudo", "chmod", pathPerm, fPath)
 	if err := cmd.Run(); err != nil {
 		log.Debug("Error to set back %s folder permissions", fPath)
@@ -299,7 +319,7 @@ func (u *Update) setFolderPermissions(pathPerm, fPath string) error {
 }
 
 // exitWithError exit with error and remove temp file.
-func (u *Update) exitWithError() {
+func (u *updateAction) exitWithError() {
 	if _, err := os.Stat(u.fTmpPath); err == nil {
 		if err = os.Remove(u.fTmpPath); err != nil {
 			log.Err("Error file %s deleting: %s", u.fTmpPath, err)
