@@ -3,9 +3,7 @@ package plasmactlupdate
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -112,44 +110,14 @@ func runCommands(u *updateAction) error {
 		return err
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	log.Debug("Binary path: %s\n", u.fPath)
+
+	if err = u.installFile(u.fDir); err != nil {
 		return err
 	}
 
-	envPath := os.Getenv("PATH")
-	log.Debug("PATH env var = %s\n", envPath)
-
-	u.setBinPath(envPath, homeDir)
-	log.Debug("Binary path = %s\n", u.fDir)
-
-	// Installing binary.
-	if u.fDir != "" {
-		// PATH is defined and includes dir where we can move binary.
-		if err = u.installFile(u.fDir); err != nil {
-			return err
-		}
-	} else {
-		// PATH is either undefined, empty or does not contain bin path.
-		cli.Println("PATH var does not contain %s", u.fDir)
-		u.fDir = filepath.Join(homeDir, ".plasmactl")
-		cli.Println("Creating %s directory\n", u.fDir)
-
-		if err = os.MkdirAll(u.fDir, 0750); err != nil {
-			return err
-		}
-		if err = u.installFile(u.fDir); err != nil {
-			return err
-		}
-
-		// Set hints to set up PATH variable.
-		if !strings.Contains(envPath, u.fDir) {
-			cli.Println("%s is not in $PATH.", u.fDir)
-		}
-	}
-
 	// Outro.
-	cli.Println("\u001B[0;32mplasmactl has been installed successfully.\u001B[0m")
+	cli.Println("\u001B[0;32m%s has been installed successfully.\u001B[0m", u.fName)
 
 	return nil
 }
