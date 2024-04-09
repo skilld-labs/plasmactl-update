@@ -59,8 +59,11 @@ func (u *updateAction) initVars() (string, string, error) {
 		return "", "", err
 	}
 
-	// Set updateAction vars.
-	u.fName = fmt.Sprintf("plasmactl%s", u.ext)
+	err = u.findExecPaths()
+	if err != nil {
+		return "", "", err
+	}
+
 	u.fTmpPath = filepath.Join(os.TempDir(), u.fName)
 
 	// Get the machine architecture.
@@ -71,12 +74,41 @@ func (u *updateAction) initVars() (string, string, error) {
 
 	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
 
-	log.Debug("OS = %s\n", currOS)
-	log.Debug("Arch = %s\n", arch)
+	log.Debug("OS: %s\n", currOS)
+	log.Debug("Arch: %s\n", arch)
 	log.Debug("Temp file path: %s\n", u.fTmpPath)
 	log.Debug("Source url of release: %s\n", u.c.URL)
 
 	return currOS, arch, nil
+}
+
+func (u *updateAction) findExecPaths() error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	fi, err := os.Lstat(execPath)
+	if err != nil {
+		return err
+	}
+
+	var path string
+	if fi.Mode()&os.ModeSymlink != 0 {
+		evalPath, err := filepath.EvalSymlinks(execPath)
+		if err != nil {
+			return err
+		}
+		path = evalPath
+	} else {
+		path = execPath
+	}
+
+	u.fDir = filepath.Dir(path)
+	u.fPath = strings.TrimSpace(path)
+	u.fName = filepath.Base(path)
+
+	return nil
 }
 
 // getCredentials stores username and password credentials.
@@ -240,19 +272,6 @@ func (u *updateAction) downloadFile() error {
 	}
 
 	return nil
-}
-
-// setBinPath get bin folder path.
-func (u *updateAction) setBinPath(envPath, homeDir string) {
-	if strings.Contains(envPath, homeDir+"/.global/bin") {
-		u.fDir = filepath.Join(homeDir, ".global/bin")
-	} else if strings.Contains(envPath, homeDir+"/.local/bin") {
-		u.fDir = filepath.Join(homeDir, ".local/bin")
-	} else if strings.Contains(envPath, "/usr/local/bin") {
-		u.fDir = "/usr/local/bin"
-	}
-
-	u.fPath = strings.TrimSpace(filepath.Join(u.fDir, u.fName))
 }
 
 // installFile copy file to the bin folder and remove temp file.
