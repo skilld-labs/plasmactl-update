@@ -16,6 +16,13 @@ import (
 	"github.com/launchrctl/launchr/pkg/log"
 )
 
+const (
+	sudoCmd  = "sudo"
+	doasCmd  = "doas"
+	chmodCmd = "chmod"
+)
+
+// updateAction stored update definition.
 type updateAction struct {
 	k        keyring.Keyring
 	c        keyring.CredentialsItem
@@ -24,11 +31,40 @@ type updateAction struct {
 	fTmpPath string
 	fPath    string
 	fDir     string
+	sudoCmd  string
+}
+
+func isCommandAvailable(name string) (bool, string) {
+	var cmdPath string
+	cmdPath, err := exec.LookPath(name)
+	if err != nil {
+		return false, ""
+	}
+	return true, cmdPath
 }
 
 // createUpdateAction instance.
 func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem) (*updateAction, error) {
-	return &updateAction{k: kr, c: cr}, nil
+	sudoAvailable, _ := isCommandAvailable(sudoCmd)
+	doasAvailable, _ := isCommandAvailable(doasCmd)
+	chmodAvailable, _ := isCommandAvailable(chmodCmd)
+
+	if !sudoAvailable && !doasAvailable {
+		return nil, fmt.Errorf("neither sudo or doas is available on your system. Please install one of them")
+	}
+
+	if !chmodAvailable {
+		return nil, fmt.Errorf("chmod is not available on your system. Please install it")
+	}
+
+	var cmd string
+	if sudoAvailable {
+		cmd = sudoCmd
+	} else {
+		cmd = doasCmd
+	}
+
+	return &updateAction{k: kr, c: cr, sudoCmd: cmd}, nil
 }
 
 // Errors.
@@ -292,50 +328,53 @@ func (u *updateAction) installFile(dirPath string) error {
 	defer src.Close()
 
 	// Set temp permissions for the folder with plasmactl.
-	if err = u.setFolderPermissions("777", u.fDir); err != nil {
+	if err = u.setPermissions("777", u.fDir); err != nil {
 		return err
 	}
+
+	defer func() {
+		if errDefer := u.setPermissions(pathPerm, u.fDir); errDefer != nil {
+			log.Err("Error during setting folder %s permissions: %s", u.fDir, errDefer)
+		}
+	}()
 
 	fTmpName := u.fPath + ".tmp"
 	dst, err := os.Create(filepath.Clean(fTmpName))
 	if err != nil {
-		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
 	defer dst.Close()
 
 	_, err = io.Copy(dst, src)
 	if err != nil {
-		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
 
 	// Rename temp file to plasmactl.
 	if err = os.Rename(fTmpName, u.fPath); err != nil {
 		log.Debug("Failed to rename temp file.")
-		u.setFolderPermissions(pathPerm, u.fDir)
 		return err
 	}
 
 	// Set plasmactl permissions.
-	if err = u.setFolderPermissions("755", u.fPath); err != nil {
-		return err
-	}
-	// Get back folder permissions.
-	if err = u.setFolderPermissions(pathPerm, u.fDir); err != nil {
+	if err = u.setPermissions("755", u.fPath); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (u *updateAction) setFolderPermissions(pathPerm, fPath string) error {
-	cmd := exec.Command("sudo", "chmod", pathPerm, fPath)
-	if err := cmd.Run(); err != nil {
-		log.Debug("Error to set back %s folder permissions", fPath)
-		return err
+func (u *updateAction) setPermissions(permissions, target string) error {
+	var cmd *exec.Cmd
+
+	if u.sudoCmd == "sudo" {
+		cmd = exec.Command(sudoCmd, chmodCmd, permissions, target)
+	} else {
+		cmd = exec.Command(doasCmd, chmodCmd, permissions, target)
 	}
-	return nil
+
+	err := cmd.Run()
+	return err
 }
 
 // exitWithError exit with error and remove temp file.
