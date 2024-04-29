@@ -3,10 +3,6 @@ package plasmactlupdate
 
 import (
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strings"
-
 	"github.com/launchrctl/keyring"
 	"github.com/launchrctl/launchr"
 	"github.com/launchrctl/launchr/pkg/cli"
@@ -90,19 +86,18 @@ func runCommands(u *updateAction) error {
 	}
 
 	// Get value of Stable Release.
-	sr, err := u.getStableRelease()
+	stableRelease, err := u.getStableRelease()
 	if err != nil {
 		return err
 	}
 
-	isUtd := isUpToDate(u.fName, sr)
-	if isUtd {
+	if isUpToDate(stableRelease) {
 		cli.Println("Current version of plasmactl is up to date.")
 		return nil
 	}
 
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	u.c.URL = fmt.Sprintf(binPathMask, baseURL, sr, currOS, arch, u.ext)
+	u.c.URL = fmt.Sprintf(binPathMask, baseURL, stableRelease, currOS, arch, u.ext)
 	cli.Println("Downloading file: %s", u.c.URL)
 
 	// Download file to the temp folder.
@@ -123,31 +118,7 @@ func runCommands(u *updateAction) error {
 }
 
 // isUpToDate check is current installed version of plasmactl is not up-to-date.
-func isUpToDate(fName, sr string) bool {
-	gV := strings.Split(strings.Replace(sr, "v", "", 1), ".")
-
-	// Parse version command.
-	cmd := exec.Command(fName, "--version")
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	currVerOut := string(out)
-	r := regexp.MustCompile(`plasmactl version\s+(v\d+\.\d+\.\d+)`)
-	match := r.FindStringSubmatch(currVerOut)
-
-	if len(match) > 1 && match[1] != "" {
-		log.Debug("Installed version: %s", match[1])
-
-		cV := strings.Split(strings.Replace(match[1], "v", "", 1), ".")
-
-		if (gV[0] > cV[0]) || (gV[0] == cV[0] && gV[1] > cV[1]) || (gV[0] == cV[0] && gV[1] == cV[1] && gV[2] > cV[2]) {
-			return false
-		}
-	} else {
-		return false
-	}
-
-	return true
+func isUpToDate(stableRelease string) bool {
+	version := launchr.Version()
+	return version.Version == stableRelease
 }
