@@ -12,8 +12,7 @@ import (
 	"strings"
 
 	"github.com/launchrctl/keyring"
-	"github.com/launchrctl/launchr/pkg/cli"
-	"github.com/launchrctl/launchr/pkg/log"
+	"github.com/launchrctl/launchr"
 )
 
 const (
@@ -109,10 +108,7 @@ func (u *updateAction) initVars() (string, string, error) {
 
 	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
 
-	log.Debug("OS: %s\n", currOS)
-	log.Debug("Arch: %s\n", arch)
-	log.Debug("Temp file path: %s\n", u.fTmpPath)
-	log.Debug("Source url of release: %s\n", u.c.URL)
+	launchr.Log().Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
 
 	return currOS, arch, nil
 }
@@ -149,7 +145,7 @@ func (u *updateAction) findExecPaths() error {
 // getCredentials stores username and password credentials.
 func (u *updateAction) getCredentials() error {
 	repoURL := fmt.Sprintf("%s/%s", baseURL, releasePath)
-	log.Debug("Source url of release: %s\n", repoURL)
+	launchr.Log().Debug("get credentials for source url of release", "url", repoURL)
 
 	// Get credentials and save in keyring.
 	ci, err := u.k.GetForURL(repoURL)
@@ -157,7 +153,6 @@ func (u *updateAction) getCredentials() error {
 		if errors.Is(err, keyring.ErrEmptyPass) {
 			return err
 		} else if !errors.Is(err, keyring.ErrNotFound) {
-			log.Debug("%s", err)
 			return errMalformedKeyring
 		}
 
@@ -165,7 +160,7 @@ func (u *updateAction) getCredentials() error {
 		ci.Username = u.c.Username
 		ci.Password = u.c.Password
 		if ci.Username == "" || ci.Password == "" {
-			cli.Println("Enter credentials for %s", ci.URL)
+			launchr.Term().Info().Printfln("Enter credentials for %s", ci.URL)
 			if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
 				return err
 			}
@@ -189,7 +184,7 @@ func (u *updateAction) getOS() (os string, err error) {
 	if os == "windows" {
 		u.ext = ".exe"
 	} else if os != "linux" && os != "darwin" {
-		cli.Println("Unsupported operating system: %s", os)
+		launchr.Term().Error().Printfln("Unsupported operating system: %s", os)
 		return "", errUnsupportedOS
 	}
 	return os, nil
@@ -203,7 +198,7 @@ func getArch() (arch string, err error) {
 		return arch, nil
 	}
 
-	cli.Println("Unsupported architecture: %s", arch)
+	launchr.Term().Printfln("Unsupported architecture: %s", arch)
 	return "", errUnsupportedArch
 }
 
@@ -217,19 +212,19 @@ func (u *updateAction) validateCredentials() error {
 
 	switch r.StatusCode {
 	case 0:
-		cli.Println("Error: Failed to validate credentials. Access denied.")
+		launchr.Term().Error().Println("Failed to validate credentials. Access denied.")
 		return errInvalidCreds
 	case 200:
-		cli.Println("Valid credentials. Access granted.")
+		launchr.Term().Success().Println("Valid credentials. Access granted.")
 	case 401:
-		cli.Println("Error: HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
+		launchr.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
 		return errInvalidCreds
 	case 404:
-		cli.Println("Error: HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
+		launchr.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
 		return errInvalidCreds
 	default:
-		cli.Println(
-			"Error: HTTP %d. An issue appeared while trying to validate credentials against %s.",
+		launchr.Term().Error().Printfln(
+			"HTTP %d. An issue appeared while trying to validate credentials against %s.",
 			r.StatusCode,
 			u.c.URL,
 		)
@@ -270,7 +265,7 @@ func (u *updateAction) getStableRelease() (string, error) {
 	}
 
 	r := strings.TrimSpace(string(body))
-	cli.Println("Stable release: %s", r)
+	launchr.Term().Printfln("Stable release: %s", r)
 
 	return r, nil
 
@@ -310,7 +305,7 @@ func (u *updateAction) downloadFile() error {
 
 // installFile copy file to the bin folder and remove temp file.
 func (u *updateAction) installFile(dirPath string) error {
-	cli.Println("Installing %s binary under %s", u.fName, dirPath)
+	launchr.Term().Printfln("Installing %s binary under %s", u.fName, dirPath)
 
 	info, err := os.Stat(u.fDir)
 	if err != nil {
@@ -332,7 +327,7 @@ func (u *updateAction) installFile(dirPath string) error {
 
 	defer func() {
 		if errDefer := u.setPermissions(pathPerm, u.fDir); errDefer != nil {
-			log.Err("Error during setting folder %s permissions: %s", u.fDir, errDefer)
+			launchr.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
 		}
 	}()
 
@@ -350,7 +345,6 @@ func (u *updateAction) installFile(dirPath string) error {
 
 	// Rename temp file to plasmactl.
 	if err = os.Rename(fTmpName, u.fPath); err != nil {
-		log.Debug("Failed to rename temp file.")
 		return err
 	}
 
@@ -379,9 +373,9 @@ func (u *updateAction) setPermissions(permissions, target string) error {
 func (u *updateAction) exitWithError() {
 	if _, err := os.Stat(u.fTmpPath); err == nil {
 		if err = os.Remove(u.fTmpPath); err != nil {
-			log.Err("Error file %s deleting: %s", u.fTmpPath, err)
+			launchr.Log().Error("error deleting file", "file", u.fTmpPath, "error", err)
 		}
 	}
 
-	cli.Println("\033[31;31mUpdate failed\033[0m")
+	launchr.Term().Error().Println("Update failed")
 }
