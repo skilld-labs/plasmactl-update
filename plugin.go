@@ -2,15 +2,22 @@
 package plasmactlupdate
 
 import (
+	"context"
+	_ "embed"
 	"fmt"
 
 	"github.com/launchrctl/keyring"
+
 	"github.com/launchrctl/launchr"
+	"github.com/launchrctl/launchr/pkg/action"
 )
 
 func init() {
 	launchr.RegisterPlugin(&Plugin{})
 }
+
+//go:embed action.yaml
+var actionYaml []byte
 
 // Plugin is [launchr.Plugin] providing update action.
 type Plugin struct {
@@ -30,32 +37,24 @@ func (p *Plugin) OnAppInit(app launchr.App) error {
 	return nil
 }
 
-// CobraAddCommands implements [launchr.CobraPlugin] interface to provide update functionality.
-func (p *Plugin) CobraAddCommands(rootCmd *launchr.Command) error {
-	var ci keyring.CredentialsItem
+// DiscoverActions implements [launchr.ActionDiscoveryPlugin] interface.
+func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
+	a := action.NewFromYAML("update", actionYaml)
+	a.SetRuntime(action.NewFnRuntime(func(_ context.Context, a *action.Action) error {
+		input := a.Input()
+		ci := keyring.CredentialsItem{
+			URL:      baseURL,
+			Username: input.Opt("username").(string),
+			Password: input.Opt("password").(string),
+		}
+		u, err := createUpdateAction(p.k, ci)
+		if err != nil {
+			return err
+		}
 
-	var updCmd = &launchr.Command{
-		Use:   "update",
-		Short: "Command to fetch and install latest version of " + rootCmd.Name(),
-		RunE: func(cmd *launchr.Command, _ []string) error {
-			// Don't show usage help on a runtime error.
-			cmd.SilenceUsage = true
-			u, err := createUpdateAction(p.k, ci)
-			if err != nil {
-				return err
-			}
-
-			return runUpdate(u)
-		},
-	}
-
-	// Credentials flags
-	ci.URL = baseURL
-	updCmd.Flags().StringVarP(&ci.Username, "username", "u", "", "Username")
-	updCmd.Flags().StringVarP(&ci.Password, "password", "p", "", "Password")
-	rootCmd.AddCommand(updCmd)
-
-	return nil
+		return runUpdate(u)
+	}))
+	return []*action.Action{a}, nil
 }
 
 // runUpdate command entrypoint.

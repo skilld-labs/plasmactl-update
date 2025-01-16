@@ -1,0 +1,13 @@
+runtime: plugin
+action:
+  title: Update
+  description: "Command to fetch and install the latest version of plasmactl"
+  options:
+    - name: username
+      title: Username
+      type: string
+      default: ""
+    - name: password
+      title: Password
+      type: string
+      default: ""
