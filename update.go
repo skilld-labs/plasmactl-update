@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/launchrctl/keyring"
 	"github.com/launchrctl/launchr"
@@ -20,6 +22,8 @@ const (
 	doasCmd  = "doas"
 	chmodCmd = "chmod"
 )
+
+var errNoWritePermission = errors.New("no write permission to binary directory")
 
 type updateAction struct {
 	k        keyring.Keyring
@@ -181,9 +185,7 @@ func (u *updateAction) getCredentials() error {
 func (u *updateAction) getOS() (os string, err error) {
 	os = runtime.GOOS
 
-	if os == "windows" {
-		u.ext = ".exe"
-	} else if os != "linux" && os != "darwin" {
+	if os != "linux" && os != "darwin" {
 		launchr.Term().Error().Printfln("Unsupported operating system: %s", os)
 		return "", errUnsupportedOS
 	}
@@ -307,11 +309,15 @@ func (u *updateAction) downloadFile() error {
 func (u *updateAction) installFile(dirPath string) error {
 	launchr.Term().Printfln("Installing %s binary under %s", u.fName, dirPath)
 
-	info, err := os.Stat(u.fDir)
+	err := hasWritePermissions(dirPath)
+	sudoRequired := false
 	if err != nil {
-		return err
+		if !errors.Is(err, errNoWritePermission) {
+			return err
+		}
+
+		sudoRequired = true
 	}
-	pathPerm := fmt.Sprintf("%04o", info.Mode().Perm())
 
 	// Copy temp file in the plasmactl folder.
 	src, err := os.Open(u.fTmpPath)
@@ -320,16 +326,24 @@ func (u *updateAction) installFile(dirPath string) error {
 	}
 	defer src.Close()
 
-	// Set temp permissions for the folder with plasmactl.
-	if err = u.setPermissions("777", u.fDir); err != nil {
-		return err
-	}
-
-	defer func() {
-		if errDefer := u.setPermissions(pathPerm, u.fDir); errDefer != nil {
-			launchr.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
+	if sudoRequired {
+		info, err := os.Stat(u.fDir)
+		if err != nil {
+			return err
 		}
-	}()
+
+		pathPerm := fmt.Sprintf("%04o", info.Mode().Perm())
+		// Set temp permissions for the folder with plasmactl.
+		if err = u.setPermissions("777", u.fDir, sudoRequired); err != nil {
+			return err
+		}
+
+		defer func() {
+			if errDefer := u.setPermissions(pathPerm, u.fDir, sudoRequired); errDefer != nil {
+				launchr.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
+			}
+		}()
+	}
 
 	fTmpName := u.fPath + ".tmp"
 	dst, err := os.Create(filepath.Clean(fTmpName))
@@ -349,20 +363,24 @@ func (u *updateAction) installFile(dirPath string) error {
 	}
 
 	// Set plasmactl permissions.
-	if err = u.setPermissions("755", u.fPath); err != nil {
+	if err = u.setPermissions("755", u.fPath, sudoRequired); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (u *updateAction) setPermissions(permissions, target string) error {
+func (u *updateAction) setPermissions(permissions, target string, sudo bool) error {
 	var cmd *exec.Cmd
 
-	if u.sudoCmd == "sudo" {
-		cmd = exec.Command(sudoCmd, chmodCmd, permissions, target)
+	if sudo {
+		if u.sudoCmd == "sudo" {
+			cmd = exec.Command(sudoCmd, chmodCmd, permissions, target)
+		} else {
+			cmd = exec.Command(doasCmd, chmodCmd, permissions, target)
+		}
 	} else {
-		cmd = exec.Command(doasCmd, chmodCmd, permissions, target)
+		cmd = exec.Command(chmodCmd, permissions, target)
 	}
 
 	err := cmd.Run()
@@ -378,4 +396,39 @@ func (u *updateAction) exitWithError() {
 	}
 
 	launchr.Term().Error().Println("Update failed")
+}
+
+func hasWritePermissions(path string) error {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("error checking binary directory permissions: %w", err)
+	}
+
+	fileStat := fileInfo.Sys().(*syscall.Stat_t)
+	currentUID := os.Getuid()
+	fileOwnerUID := int(fileStat.Uid)
+	fileGroupGID := int(fileStat.Gid)
+
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("error getting current user: %w", err)
+	}
+	groups, err := currentUser.GroupIds()
+	if err != nil {
+		return fmt.Errorf("error getting user groups: %w", err)
+	}
+
+	userGroups := make(map[string]bool)
+	for _, g := range groups {
+		userGroups[g] = true
+	}
+
+	hasOwnerWrite := fileInfo.Mode().Perm()&(1<<(uint(7))) != 0
+	hasGroupWrite := fileInfo.Mode().Perm()&(1<<(uint(4))) != 0 && userGroups[fmt.Sprint(fileGroupGID)]
+
+	if (currentUID == fileOwnerUID && hasOwnerWrite) || hasGroupWrite {
+		return nil
+	}
+
+	return errNoWritePermission
 }
