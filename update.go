@@ -174,7 +174,9 @@ func (u *updateAction) getCredentials() error {
 			return err
 		}
 
-		err = u.k.Save()
+		if u.k.Exists() {
+			err = u.k.Save()
+		}
 	}
 
 	u.c = ci
