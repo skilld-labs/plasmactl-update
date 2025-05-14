@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/launchrctl/keyring"
-	"github.com/launchrctl/launchr"
+	"github.com/launchrctl/launchr/pkg/action"
 )
 
 const (
@@ -24,6 +24,9 @@ const (
 var errNoWritePermission = errors.New("no write permission to binary directory")
 
 type updateAction struct {
+	action.WithLogger
+	action.WithTerm
+
 	k        keyring.Keyring
 	c        keyring.CredentialsItem
 	ext      string
@@ -105,12 +108,16 @@ func (u *updateAction) initVars() (string, string, error) {
 	// Get the machine architecture.
 	arch, err := getArch()
 	if err != nil {
+		if errors.Is(err, errUnsupportedArch) {
+			u.Term().Printfln("Unsupported architecture: %s", arch)
+		}
+
 		return "", "", err
 	}
 
 	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
 
-	launchr.Log().Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
+	u.Log().Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
 
 	return currOS, arch, nil
 }
@@ -147,7 +154,7 @@ func (u *updateAction) findExecPaths() error {
 // getCredentials stores username and password credentials.
 func (u *updateAction) getCredentials() error {
 	repoURL := fmt.Sprintf("%s/%s", baseURL, releasePath)
-	launchr.Log().Debug("get credentials for source url of release", "url", repoURL)
+	u.Log().Debug("get credentials for source url of release", "url", repoURL)
 
 	// Get credentials and save in keyring.
 	ci, err := u.k.GetForURL(repoURL)
@@ -162,7 +169,7 @@ func (u *updateAction) getCredentials() error {
 		ci.Username = u.c.Username
 		ci.Password = u.c.Password
 		if ci.Username == "" || ci.Password == "" {
-			launchr.Term().Info().Printfln("Enter credentials for %s", ci.URL)
+			u.Term().Info().Printfln("Enter credentials for %s", ci.URL)
 			if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
 				return err
 			}
@@ -186,7 +193,7 @@ func (u *updateAction) getOS() (os string, err error) {
 	os = runtime.GOOS
 
 	if os != "linux" && os != "darwin" {
-		launchr.Term().Error().Printfln("Unsupported operating system: %s", os)
+		u.Term().Error().Printfln("Unsupported operating system: %s", os)
 		return "", errUnsupportedOS
 	}
 	return os, nil
@@ -200,7 +207,6 @@ func getArch() (arch string, err error) {
 		return arch, nil
 	}
 
-	launchr.Term().Printfln("Unsupported architecture: %s", arch)
 	return "", errUnsupportedArch
 }
 
@@ -214,18 +220,18 @@ func (u *updateAction) validateCredentials() error {
 
 	switch r.StatusCode {
 	case 0:
-		launchr.Term().Error().Println("Failed to validate credentials. Access denied.")
+		u.Term().Error().Println("Failed to validate credentials. Access denied.")
 		return errInvalidCreds
 	case 200:
-		launchr.Term().Success().Println("Valid credentials. Access granted.")
+		u.Term().Success().Println("Valid credentials. Access granted.")
 	case 401:
-		launchr.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
+		u.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
 		return errInvalidCreds
 	case 404:
-		launchr.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
+		u.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
 		return errInvalidCreds
 	default:
-		launchr.Term().Error().Printfln(
+		u.Term().Error().Printfln(
 			"HTTP %d. An issue appeared while trying to validate credentials against %s.",
 			r.StatusCode,
 			u.c.URL,
@@ -267,7 +273,7 @@ func (u *updateAction) getStableRelease() (string, error) {
 	}
 
 	r := strings.TrimSpace(string(body))
-	launchr.Term().Printfln("Stable release: %s", r)
+	u.Term().Printfln("Stable release: %s", r)
 
 	return r, nil
 
@@ -307,7 +313,7 @@ func (u *updateAction) downloadFile() error {
 
 // installFile copy file to the bin folder and remove temp file.
 func (u *updateAction) installFile(dirPath string) error {
-	launchr.Term().Printfln("Installing %s binary under %s", u.fName, dirPath)
+	u.Term().Printfln("Installing %s binary under %s", u.fName, dirPath)
 
 	err := hasWritePermissions(dirPath)
 	sudoRequired := false
@@ -340,7 +346,7 @@ func (u *updateAction) installFile(dirPath string) error {
 
 		defer func() {
 			if errDefer := u.setPermissions(pathPerm, u.fDir, sudoRequired); errDefer != nil {
-				launchr.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
+				u.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
 			}
 		}()
 	}
@@ -391,9 +397,9 @@ func (u *updateAction) setPermissions(permissions, target string, sudo bool) err
 func (u *updateAction) exitWithError() {
 	if _, err := os.Stat(u.fTmpPath); err == nil {
 		if err = os.Remove(u.fTmpPath); err != nil {
-			launchr.Log().Error("error deleting file", "file", u.fTmpPath, "error", err)
+			u.Log().Error("error deleting file", "file", u.fTmpPath, "error", err)
 		}
 	}
 
-	launchr.Term().Error().Println("Update failed")
+	u.Term().Error().Println("Update failed")
 }
