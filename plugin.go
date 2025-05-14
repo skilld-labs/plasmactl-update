@@ -47,7 +47,18 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 			Username: input.Opt("username").(string),
 			Password: input.Opt("password").(string),
 		}
-		u, err := createUpdateAction(p.k, ci)
+
+		log := launchr.Log().With()
+		if rt, ok := a.Runtime().(action.RuntimeLoggerAware); ok {
+			log = rt.LogWith()
+		}
+
+		term := launchr.Term()
+		if rt, ok := a.Runtime().(action.RuntimeTermAware); ok {
+			term = rt.Term()
+		}
+
+		u, err := createUpdateAction(p.k, ci, log, term)
 		if err != nil {
 			return err
 		}
@@ -71,7 +82,7 @@ func runUpdate(u *updateAction) error {
 // runCommands run commands one by one.
 func runCommands(u *updateAction) error {
 	version := launchr.Version()
-	launchr.Term().Info().Printfln("Starting %s installation...", version.Name)
+	u.term.Info().Printfln("Starting %s installation...", version.Name)
 
 	currOS, arch, err := u.initVars()
 	if err != nil {
@@ -90,27 +101,27 @@ func runCommands(u *updateAction) error {
 	}
 
 	if isUpToDate(stableRelease) {
-		launchr.Term().Printfln("Current version of %s is up to date.", version.Name)
+		u.term.Printfln("Current version of %s is up to date.", version.Name)
 		return nil
 	}
 
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
 	u.c.URL = fmt.Sprintf(binPathMask, baseURL, stableRelease, currOS, arch, u.ext)
-	launchr.Term().Printfln("Downloading file: %s", u.c.URL)
+	u.term.Printfln("Downloading file: %s", u.c.URL)
 
 	// Download file to the temp folder.
 	if err = u.downloadFile(); err != nil {
 		return err
 	}
 
-	launchr.Log().Debug("binary path", "path", u.fPath)
+	u.log.Debug("binary path", "path", u.fPath)
 
 	if err = u.installFile(u.fDir); err != nil {
 		return err
 	}
 
 	// Outro.
-	launchr.Term().Success().Printfln("%s has been installed successfully.", u.fName)
+	u.term.Success().Printfln("%s has been installed successfully.", u.fName)
 	return nil
 }
 
