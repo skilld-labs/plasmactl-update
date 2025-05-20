@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/launchrctl/keyring"
-	"github.com/launchrctl/launchr"
+	"github.com/launchrctl/launchr/pkg/action"
 )
 
 const (
@@ -24,10 +24,11 @@ const (
 var errNoWritePermission = errors.New("no write permission to binary directory")
 
 type updateAction struct {
+	action.WithLogger
+	action.WithTerm
+
 	k        keyring.Keyring
 	c        keyring.CredentialsItem
-	log      *launchr.Slog
-	term     *launchr.Terminal
 	ext      string
 	fName    string
 	fTmpPath string
@@ -46,7 +47,7 @@ func isCommandAvailable(name string) (bool, string) {
 }
 
 // createUpdateAction instance.
-func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem, log *launchr.Slog, term *launchr.Terminal) (*updateAction, error) {
+func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem) (*updateAction, error) {
 	sudoAvailable, _ := isCommandAvailable(sudoCmd)
 	doasAvailable, _ := isCommandAvailable(doasCmd)
 	chmodAvailable, _ := isCommandAvailable(chmodCmd)
@@ -66,7 +67,7 @@ func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem, log *lau
 		cmd = doasCmd
 	}
 
-	return &updateAction{k: kr, c: cr, sudoCmd: cmd, log: log, term: term}, nil
+	return &updateAction{k: kr, c: cr, sudoCmd: cmd}, nil
 }
 
 // Errors.
@@ -108,7 +109,7 @@ func (u *updateAction) initVars() (string, string, error) {
 	arch, err := getArch()
 	if err != nil {
 		if errors.Is(err, errUnsupportedArch) {
-			u.term.Printfln("Unsupported architecture: %s", arch)
+			u.WithTerm.Term().Printfln("Unsupported architecture: %s", arch)
 		}
 
 		return "", "", err
@@ -116,7 +117,7 @@ func (u *updateAction) initVars() (string, string, error) {
 
 	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
 
-	u.log.Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
+	u.WithLogger.Log().Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
 
 	return currOS, arch, nil
 }
@@ -153,7 +154,7 @@ func (u *updateAction) findExecPaths() error {
 // getCredentials stores username and password credentials.
 func (u *updateAction) getCredentials() error {
 	repoURL := fmt.Sprintf("%s/%s", baseURL, releasePath)
-	u.log.Debug("get credentials for source url of release", "url", repoURL)
+	u.WithLogger.Log().Debug("get credentials for source url of release", "url", repoURL)
 
 	// Get credentials and save in keyring.
 	ci, err := u.k.GetForURL(repoURL)
@@ -168,7 +169,7 @@ func (u *updateAction) getCredentials() error {
 		ci.Username = u.c.Username
 		ci.Password = u.c.Password
 		if ci.Username == "" || ci.Password == "" {
-			u.term.Info().Printfln("Enter credentials for %s", ci.URL)
+			u.WithTerm.Term().Info().Printfln("Enter credentials for %s", ci.URL)
 			if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
 				return err
 			}
@@ -192,7 +193,7 @@ func (u *updateAction) getOS() (os string, err error) {
 	os = runtime.GOOS
 
 	if os != "linux" && os != "darwin" {
-		u.term.Error().Printfln("Unsupported operating system: %s", os)
+		u.WithTerm.Term().Error().Printfln("Unsupported operating system: %s", os)
 		return "", errUnsupportedOS
 	}
 	return os, nil
@@ -219,18 +220,18 @@ func (u *updateAction) validateCredentials() error {
 
 	switch r.StatusCode {
 	case 0:
-		u.term.Error().Println("Failed to validate credentials. Access denied.")
+		u.WithTerm.Term().Error().Println("Failed to validate credentials. Access denied.")
 		return errInvalidCreds
 	case 200:
-		u.term.Success().Println("Valid credentials. Access granted.")
+		u.WithTerm.Term().Success().Println("Valid credentials. Access granted.")
 	case 401:
-		u.term.Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
+		u.WithTerm.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
 		return errInvalidCreds
 	case 404:
-		u.term.Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
+		u.WithTerm.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
 		return errInvalidCreds
 	default:
-		u.term.Error().Printfln(
+		u.WithTerm.Term().Error().Printfln(
 			"HTTP %d. An issue appeared while trying to validate credentials against %s.",
 			r.StatusCode,
 			u.c.URL,
@@ -272,7 +273,7 @@ func (u *updateAction) getStableRelease() (string, error) {
 	}
 
 	r := strings.TrimSpace(string(body))
-	u.term.Printfln("Stable release: %s", r)
+	u.WithTerm.Term().Printfln("Stable release: %s", r)
 
 	return r, nil
 
@@ -312,7 +313,7 @@ func (u *updateAction) downloadFile() error {
 
 // installFile copy file to the bin folder and remove temp file.
 func (u *updateAction) installFile(dirPath string) error {
-	u.term.Printfln("Installing %s binary under %s", u.fName, dirPath)
+	u.WithTerm.Term().Printfln("Installing %s binary under %s", u.fName, dirPath)
 
 	err := hasWritePermissions(dirPath)
 	sudoRequired := false
@@ -345,7 +346,7 @@ func (u *updateAction) installFile(dirPath string) error {
 
 		defer func() {
 			if errDefer := u.setPermissions(pathPerm, u.fDir, sudoRequired); errDefer != nil {
-				u.log.Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
+				u.WithLogger.Log().Error("error during setting folder permissions", "dir", u.fDir, "error", errDefer)
 			}
 		}()
 	}
@@ -396,9 +397,9 @@ func (u *updateAction) setPermissions(permissions, target string, sudo bool) err
 func (u *updateAction) exitWithError() {
 	if _, err := os.Stat(u.fTmpPath); err == nil {
 		if err = os.Remove(u.fTmpPath); err != nil {
-			u.log.Error("error deleting file", "file", u.fTmpPath, "error", err)
+			u.WithLogger.Log().Error("error deleting file", "file", u.fTmpPath, "error", err)
 		}
 	}
 
-	u.term.Error().Println("Update failed")
+	u.WithTerm.Term().Error().Println("Update failed")
 }
