@@ -26,8 +26,12 @@ var errNoWritePermission = errors.New("no write permission to binary directory")
 type updateAction struct {
 	action.WithLogger
 	action.WithTerm
+	k keyring.Keyring
 
-	k        keyring.Keyring
+	cfg         *config
+	externalCfg string
+
+	// runtime vars.
 	c        keyring.CredentialsItem
 	ext      string
 	fName    string
@@ -35,6 +39,8 @@ type updateAction struct {
 	fPath    string
 	fDir     string
 	sudoCmd  string
+	os       string
+	arch     string
 }
 
 func isCommandAvailable(name string) (bool, string) {
@@ -47,7 +53,7 @@ func isCommandAvailable(name string) (bool, string) {
 }
 
 // createUpdateAction instance.
-func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem) (*updateAction, error) {
+func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem, externalCfg string) (*updateAction, error) {
 	sudoAvailable, _ := isCommandAvailable(sudoCmd)
 	doasAvailable, _ := isCommandAvailable(doasCmd)
 	chmodAvailable, _ := isCommandAvailable(chmodCmd)
@@ -67,7 +73,7 @@ func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem) (*update
 		cmd = doasCmd
 	}
 
-	return &updateAction{k: kr, c: cr, sudoCmd: cmd}, nil
+	return &updateAction{k: kr, c: cr, sudoCmd: cmd, cfg: getUpdateConfig(), externalCfg: externalCfg}, nil
 }
 
 // Errors.
@@ -78,48 +84,64 @@ var (
 	errMalformedKeyring = errors.New("the keyring is malformed or wrong passphrase provided")
 )
 
-// Define the URL pattern for the file.
-const (
-	baseURL     = "https://repositories.skilld.cloud/repository/pla-plasmactl-raw"
-	releasePath = "stable_release"
-	binPathMask = "%s/%s/plasmactl_%s_%s%s"
-)
-
 // initVars initialize plugin variables.
-func (u *updateAction) initVars() (string, string, error) {
-	// Get username and password.
-	if err := u.getCredentials(); err != nil {
-		return "", "", err
-	}
+func (u *updateAction) initVars() error {
+	var err error
 
 	// Get the operating system type.
-	currOS, err := u.getOS()
+	u.os, err = getOS()
 	if err != nil {
-		return "", "", err
+		u.Term().Error().Printfln("Unsupported operating system: %s", u.os)
+		return err
 	}
-
-	err = u.findExecPaths()
-	if err != nil {
-		return "", "", err
-	}
-
-	u.fTmpPath = filepath.Join(os.TempDir(), u.fName)
 
 	// Get the machine architecture.
-	arch, err := getArch()
+	u.arch, err = getArch()
 	if err != nil {
 		if errors.Is(err, errUnsupportedArch) {
-			u.Term().Printfln("Unsupported architecture: %s", arch)
+			u.Term().Printfln("Unsupported architecture: %s", u.arch)
 		}
 
-		return "", "", err
+		return err
 	}
 
-	u.c.URL = fmt.Sprintf("%s/%s", baseURL, releasePath)
+	if u.externalCfg != "" {
+		cfgExternal, err := parseConfigFromPath(u.externalCfg)
+		if err != nil {
+			return fmt.Errorf("error parsing external config file %s: %v", u.externalCfg, err)
+		}
+		u.cfg = cfgExternal
+	}
 
-	u.Log().Debug("initialized environment", "os", currOS, "arch", arch, "temp_path", u.fTmpPath, "url", u.c.URL)
+	if u.cfg == nil {
+		return fmt.Errorf("update config is not set, use --config flag or build launchr with predefined config")
+	}
 
-	return currOS, arch, nil
+	err = validateConfig(u.cfg)
+	if err != nil {
+		u.Log().Debug("config validation failed", "error", err)
+		return fmt.Errorf("not enough configuration for update. Please ensure your build is with correct tags. See debug for missing info")
+	}
+
+	// Set URL for credentials item.
+	u.c.URL = u.cfg.RepositoryURL
+
+	// Get username and password.
+	if err = u.getCredentials(); err != nil {
+		return err
+	}
+
+	// Prepare binary paths
+	err = u.findExecPaths()
+	if err != nil {
+		return err
+	}
+
+	u.Log().Debug("initialized environment",
+		"os", u.os, "arch", u.arch, "temp_path", u.fTmpPath, "url", u.c.URL,
+		"base URL", u.cfg.RepositoryURL, "stable release", u.cfg.LatestStable, "bin_mask", u.cfg.BinMask,
+	)
+	return nil
 }
 
 func (u *updateAction) findExecPaths() error {
@@ -147,17 +169,17 @@ func (u *updateAction) findExecPaths() error {
 	u.fDir = filepath.Dir(path)
 	u.fPath = strings.TrimSpace(path)
 	u.fName = filepath.Base(path)
+	u.fTmpPath = filepath.Join(os.TempDir(), u.fName)
 
 	return nil
 }
 
 // getCredentials stores username and password credentials.
 func (u *updateAction) getCredentials() error {
-	repoURL := fmt.Sprintf("%s/%s", baseURL, releasePath)
-	u.Log().Debug("get credentials for source url of release", "url", repoURL)
+	u.Log().Debug("get credentials for source url of release", "url", u.c.URL)
 
 	// Get credentials and save in keyring.
-	ci, err := u.k.GetForURL(repoURL)
+	ci, err := u.k.GetForURL(u.c.URL)
 	if err != nil {
 		if errors.Is(err, keyring.ErrEmptyPass) {
 			return err
@@ -165,7 +187,7 @@ func (u *updateAction) getCredentials() error {
 			return errMalformedKeyring
 		}
 
-		ci.URL = repoURL
+		ci.URL = u.c.URL
 		ci.Username = u.c.Username
 		ci.Password = u.c.Password
 		if ci.Username == "" || ci.Password == "" {
@@ -188,31 +210,9 @@ func (u *updateAction) getCredentials() error {
 	return err
 }
 
-// getOS check operating system supports and set extension package file.
-func (u *updateAction) getOS() (os string, err error) {
-	os = runtime.GOOS
-
-	if os != "linux" && os != "darwin" {
-		u.Term().Error().Printfln("Unsupported operating system: %s", os)
-		return "", errUnsupportedOS
-	}
-	return os, nil
-}
-
-// getArch get OS arch.
-func getArch() (arch string, err error) {
-	arch = runtime.GOARCH
-
-	if arch == "amd64" || arch == "386" || arch == "arm64" {
-		return arch, nil
-	}
-
-	return "", errUnsupportedArch
-}
-
 // validateCredentials make request to validate credentials and return HTTP status code.
 func (u *updateAction) validateCredentials() error {
-	r, err := u.sendRequest()
+	r, err := u.sendRequest(u.c.URL)
 	if err != nil {
 		return err
 	}
@@ -242,9 +242,9 @@ func (u *updateAction) validateCredentials() error {
 }
 
 // sendRequest send HTTP request, make authorization and return response.
-func (u *updateAction) sendRequest() (*http.Response, error) {
+func (u *updateAction) sendRequest(url string) (*http.Response, error) {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", u.c.URL, nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -258,9 +258,10 @@ func (u *updateAction) sendRequest() (*http.Response, error) {
 	return resp, nil
 }
 
-// getStableRelease send request and get stable release version.
+// getStableRelease send request and get a stable release version.
 func (u *updateAction) getStableRelease() (string, error) {
-	resp, err := u.sendRequest()
+	stableReleaseURL := fmt.Sprintf("%s/%s", u.c.URL, u.cfg.LatestStable)
+	resp, err := u.sendRequest(stableReleaseURL)
 
 	if err != nil {
 		return "", err
@@ -280,8 +281,12 @@ func (u *updateAction) getStableRelease() (string, error) {
 }
 
 // downloadFile Download the file using with Basic Auth header.
-func (u *updateAction) downloadFile() error {
-	resp, err := u.sendRequest()
+func (u *updateAction) downloadFile(version string) error {
+	// Format the URL with the determined 'os', 'arch' and 'extension' values.
+	url := fmt.Sprintf(u.cfg.BinMask, u.c.URL, version, u.os, u.arch, u.ext)
+	u.Term().Printfln("Downloading file: %s", u.c.URL)
+
+	resp, err := u.sendRequest(url)
 	if err != nil {
 		return err
 	}
@@ -402,4 +407,23 @@ func (u *updateAction) exitWithError() {
 	}
 
 	u.Term().Error().Println("Update failed")
+}
+
+// getOS return OS name and checks if it's supported.
+func getOS() (os string, err error) {
+	os = runtime.GOOS
+	if os != "linux" && os != "darwin" {
+		return os, errUnsupportedOS
+	}
+	return os, nil
+}
+
+// getArch get OS arch.
+func getArch() (arch string, err error) {
+	arch = runtime.GOARCH
+	if arch == "amd64" || arch == "386" || arch == "arm64" {
+		return arch, nil
+	}
+
+	return arch, errUnsupportedArch
 }

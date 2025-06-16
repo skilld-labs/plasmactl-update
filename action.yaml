@@ -11,3 +11,7 @@ action:
       title: Password
       type: string
       default: ""
+    - name: config
+      title: Config file
+      description: Use specified config with metadata for update
+      default: ""

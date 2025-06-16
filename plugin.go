@@ -4,7 +4,6 @@ package plasmactlupdate
 import (
 	"context"
 	_ "embed"
-	"fmt"
 
 	"github.com/launchrctl/keyring"
 	"github.com/launchrctl/launchr"
@@ -42,10 +41,11 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 	a.SetRuntime(action.NewFnRuntime(func(_ context.Context, a *action.Action) error {
 		input := a.Input()
 		ci := keyring.CredentialsItem{
-			URL:      baseURL,
+			URL:      "",
 			Username: input.Opt("username").(string),
 			Password: input.Opt("password").(string),
 		}
+		externalConfig := input.Opt("config").(string)
 
 		log := launchr.Log()
 		if rt, ok := a.Runtime().(action.RuntimeLoggerAware); ok {
@@ -57,7 +57,7 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 			term = rt.Term()
 		}
 
-		u, err := createUpdateAction(p.k, ci)
+		u, err := createUpdateAction(p.k, ci, externalConfig)
 		if err != nil {
 			return err
 		}
@@ -85,7 +85,7 @@ func runCommands(u *updateAction) error {
 	version := launchr.Version()
 	u.Term().Info().Printfln("Starting %s installation...", version.Name)
 
-	currOS, arch, err := u.initVars()
+	err := u.initVars()
 	if err != nil {
 		return err
 	}
@@ -106,12 +106,8 @@ func runCommands(u *updateAction) error {
 		return nil
 	}
 
-	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	u.c.URL = fmt.Sprintf(binPathMask, baseURL, stableRelease, currOS, arch, u.ext)
-	u.Term().Printfln("Downloading file: %s", u.c.URL)
-
 	// Download file to the temp folder.
-	if err = u.downloadFile(); err != nil {
+	if err = u.downloadFile(stableRelease); err != nil {
 		return err
 	}
 
