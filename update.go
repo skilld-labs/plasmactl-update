@@ -12,7 +12,16 @@ import (
 	"strings"
 
 	"github.com/launchrctl/keyring"
+	"github.com/launchrctl/launchr"
 	"github.com/launchrctl/launchr/pkg/action"
+)
+
+// Errors.
+var (
+	errUnsupportedOS    = errors.New("unsupported operating system")
+	errUnsupportedArch  = errors.New("unsupported architecture")
+	errInvalidCreds     = errors.New("failed to validate credentials")
+	errMalformedKeyring = errors.New("the keyring is malformed or wrong passphrase provided")
 )
 
 const (
@@ -28,61 +37,70 @@ type updateAction struct {
 	action.WithTerm
 	k keyring.Keyring
 
-	cfg         *config
-	externalCfg string
+	cfg           *config
+	externalCfg   string
+	targetVersion string
 
 	// runtime vars.
-	c        keyring.CredentialsItem
-	ext      string
-	fName    string
-	fTmpPath string
-	fPath    string
-	fDir     string
-	sudoCmd  string
-	os       string
-	arch     string
+	credentials keyring.CredentialsItem
+	ext         string
+	fName       string
+	fTmpPath    string
+	fPath       string
+	fDir        string
+	sudoCmd     string
+	os          string
+	arch        string
 }
 
-func isCommandAvailable(name string) (bool, string) {
-	var cmdPath string
-	cmdPath, err := exec.LookPath(name)
+func (u *updateAction) doRun() error {
+	version := launchr.Version()
+	u.Term().Info().Printfln("Starting %s installation...", version.Name)
+	u.Log().Debug("current app info", "name", version.Name, "version", version.Version, "os", version.OS, "arch", version.Arch)
+
+	err := u.initVars()
 	if err != nil {
-		return false, ""
-	}
-	return true, cmdPath
-}
-
-// createUpdateAction instance.
-func createUpdateAction(kr keyring.Keyring, cr keyring.CredentialsItem, externalCfg string) (*updateAction, error) {
-	sudoAvailable, _ := isCommandAvailable(sudoCmd)
-	doasAvailable, _ := isCommandAvailable(doasCmd)
-	chmodAvailable, _ := isCommandAvailable(chmodCmd)
-
-	if !sudoAvailable && !doasAvailable {
-		return nil, fmt.Errorf("neither sudo or doas is available on your system. Please install one of them")
+		return err
 	}
 
-	if !chmodAvailable {
-		return nil, fmt.Errorf("chmod is not available on your system. Please install it")
+	// Check the validity of the credentials.
+	if err = u.validateCredentials(); err != nil {
+		return err
 	}
 
-	var cmd string
-	if sudoAvailable {
-		cmd = sudoCmd
+	var versionToGet string
+	if u.targetVersion != "" {
+		// Get a specific version.
+		versionToGet = u.targetVersion
 	} else {
-		cmd = doasCmd
+		// Get value of Stable Release.
+		versionToGet, err = u.getStableRelease()
+		if err != nil {
+			return err
+		}
 	}
 
-	return &updateAction{k: kr, c: cr, sudoCmd: cmd, cfg: getUpdateConfig(), externalCfg: externalCfg}, nil
-}
+	// check if the current version is up to date.
+	if version.Version == versionToGet {
+		u.Term().Printfln("Current version of %s is up to date.", version.Name)
+		return nil
+	}
 
-// Errors.
-var (
-	errUnsupportedOS    = errors.New("unsupported operating system")
-	errUnsupportedArch  = errors.New("unsupported architecture")
-	errInvalidCreds     = errors.New("failed to validate credentials")
-	errMalformedKeyring = errors.New("the keyring is malformed or wrong passphrase provided")
-)
+	// Download file to the temp folder.
+	if err = u.downloadFile(versionToGet); err != nil {
+		return err
+	}
+
+	u.Log().Debug("binary path", "path", u.fPath)
+
+	if err = u.installFile(u.fDir); err != nil {
+		return err
+	}
+
+	// Outro.
+	u.Term().Success().Printfln("%s has been installed successfully.", u.fName)
+	return nil
+}
 
 // initVars initialize plugin variables.
 func (u *updateAction) initVars() error {
@@ -105,6 +123,7 @@ func (u *updateAction) initVars() error {
 		return err
 	}
 
+	// Check if the user submitted a custom config file.
 	if u.externalCfg != "" {
 		cfgExternal, err := parseConfigFromPath(u.externalCfg)
 		if err != nil {
@@ -124,7 +143,7 @@ func (u *updateAction) initVars() error {
 	}
 
 	// Set URL for credentials item.
-	u.c.URL = u.cfg.RepositoryURL
+	u.credentials.URL = u.cfg.RepositoryURL
 
 	// Get username and password.
 	if err = u.getCredentials(); err != nil {
@@ -138,8 +157,8 @@ func (u *updateAction) initVars() error {
 	}
 
 	u.Log().Debug("initialized environment",
-		"os", u.os, "arch", u.arch, "temp_path", u.fTmpPath, "url", u.c.URL,
-		"base URL", u.cfg.RepositoryURL, "stable release", u.cfg.LatestStable, "bin_mask", u.cfg.BinMask,
+		"os", u.os, "arch", u.arch, "temp_path", u.fTmpPath, "url", u.credentials.URL,
+		"base URL", u.cfg.RepositoryURL, "stable release", u.cfg.PinnedRelease, "bin_mask", u.cfg.BinMask,
 	)
 	return nil
 }
@@ -176,10 +195,10 @@ func (u *updateAction) findExecPaths() error {
 
 // getCredentials stores username and password credentials.
 func (u *updateAction) getCredentials() error {
-	u.Log().Debug("get credentials for source url of release", "url", u.c.URL)
+	u.Log().Debug("get credentials for source url of release", "url", u.credentials.URL)
 
-	// Get credentials and save in keyring.
-	ci, err := u.k.GetForURL(u.c.URL)
+	// Get credentials and save in a keyring.
+	ci, err := u.k.GetForURL(u.credentials.URL)
 	if err != nil {
 		if errors.Is(err, keyring.ErrEmptyPass) {
 			return err
@@ -187,9 +206,9 @@ func (u *updateAction) getCredentials() error {
 			return errMalformedKeyring
 		}
 
-		ci.URL = u.c.URL
-		ci.Username = u.c.Username
-		ci.Password = u.c.Password
+		ci.URL = u.credentials.URL
+		ci.Username = u.credentials.Username
+		ci.Password = u.credentials.Password
 		if ci.Username == "" || ci.Password == "" {
 			u.Term().Info().Printfln("Enter credentials for %s", ci.URL)
 			if err = keyring.RequestCredentialsFromTty(&ci); err != nil {
@@ -206,13 +225,14 @@ func (u *updateAction) getCredentials() error {
 		}
 	}
 
-	u.c = ci
+	u.credentials = ci
 	return err
 }
 
 // validateCredentials make request to validate credentials and return HTTP status code.
 func (u *updateAction) validateCredentials() error {
-	r, err := u.sendRequest(u.c.URL)
+	// validate via access to a stable release.
+	r, err := u.sendRequest(fmt.Sprintf("%s/%s", u.credentials.URL, u.cfg.PinnedRelease))
 	if err != nil {
 		return err
 	}
@@ -228,13 +248,13 @@ func (u *updateAction) validateCredentials() error {
 		u.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
 		return errInvalidCreds
 	case 404:
-		u.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.c.URL)
+		u.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.credentials.URL)
 		return errInvalidCreds
 	default:
 		u.Term().Error().Printfln(
 			"HTTP %d. An issue appeared while trying to validate credentials against %s.",
 			r.StatusCode,
-			u.c.URL,
+			u.credentials.URL,
 		)
 	}
 
@@ -249,18 +269,20 @@ func (u *updateAction) sendRequest(url string) (*http.Response, error) {
 		return nil, err
 	}
 
-	req.SetBasicAuth(u.c.Username, u.c.Password)
+	req.SetBasicAuth(u.credentials.Username, u.credentials.Password)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
+
+	u.Log().Debug("request response", "url", url, "status", resp.Status, "status_code", resp.StatusCode, "method", req.Method)
 
 	return resp, nil
 }
 
 // getStableRelease send request and get a stable release version.
 func (u *updateAction) getStableRelease() (string, error) {
-	stableReleaseURL := fmt.Sprintf("%s/%s", u.c.URL, u.cfg.LatestStable)
+	stableReleaseURL := fmt.Sprintf("%s/%s", u.credentials.URL, u.cfg.PinnedRelease)
 	resp, err := u.sendRequest(stableReleaseURL)
 
 	if err != nil {
@@ -283,14 +305,23 @@ func (u *updateAction) getStableRelease() (string, error) {
 // downloadFile Download the file using with Basic Auth header.
 func (u *updateAction) downloadFile(version string) error {
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	url := fmt.Sprintf(u.cfg.BinMask, u.c.URL, version, u.os, u.arch, u.ext)
-	u.Term().Printfln("Downloading file: %s", u.c.URL)
+	url := fmt.Sprintf(u.cfg.BinMask, u.credentials.URL, version, u.os, u.arch, u.ext)
+	u.Term().Printfln("Downloading file: %s", url)
 
 	resp, err := u.sendRequest(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Check if a file exists based on the status code
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("file not found: %s", url)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("request failed with status: %d %s", resp.StatusCode, resp.Status)
+	}
 
 	out, err := os.Create(u.fTmpPath)
 	if err != nil {
@@ -398,15 +429,13 @@ func (u *updateAction) setPermissions(permissions, target string, sudo bool) err
 	return err
 }
 
-// exitWithError exit with error and remove temp file.
-func (u *updateAction) exitWithError() {
+// cleanup removes temporary data.
+func (u *updateAction) cleanup() {
 	if _, err := os.Stat(u.fTmpPath); err == nil {
 		if err = os.Remove(u.fTmpPath); err != nil {
 			u.Log().Error("error deleting file", "file", u.fTmpPath, "error", err)
 		}
 	}
-
-	u.Term().Error().Println("Update failed")
 }
 
 // getOS return OS name and checks if it's supported.
@@ -426,4 +455,36 @@ func getArch() (arch string, err error) {
 	}
 
 	return arch, errUnsupportedArch
+}
+
+func isCommandAvailable(name string) (bool, string) {
+	var cmdPath string
+	cmdPath, err := exec.LookPath(name)
+	if err != nil {
+		return false, ""
+	}
+	return true, cmdPath
+}
+
+func getUpdateCmd() (string, error) {
+	sudoAvailable, _ := isCommandAvailable(sudoCmd)
+	doasAvailable, _ := isCommandAvailable(doasCmd)
+	chmodAvailable, _ := isCommandAvailable(chmodCmd)
+
+	if !sudoAvailable && !doasAvailable {
+		return "", fmt.Errorf("neither sudo or doas is available on your system. Please install one of them")
+	}
+
+	if !chmodAvailable {
+		return "", fmt.Errorf("chmod is not available on your system. Please install it")
+	}
+
+	var cmd string
+	if sudoAvailable {
+		cmd = sudoCmd
+	} else {
+		cmd = doasCmd
+	}
+
+	return cmd, nil
 }

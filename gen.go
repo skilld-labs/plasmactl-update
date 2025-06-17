@@ -11,28 +11,32 @@ import (
 )
 
 const (
-	pkgPath    = "github.com/skilld-labs/plasmactl-update"
-	configName = "plasmactl-update.yaml"
-	subDir     = "plasmactl-update-plugin"
+	// @todo replace after migration.
+	pkgPath             = "github.com/skilld-labs/plasmactl-update"
+	lookupConfigNameTpl = "%s-update.yaml"
+	pluginDirTpl        = "%s-update-plugin"
+	storedConfigName    = "config.yaml"
 )
 
 // Generate implements [launchr.GeneratePlugin] interface.
 func (p *Plugin) Generate(config launchr.GenerateConfig) error {
-	launchr.Term().Info().Println("Preparing plasmactl-update plugin assets...")
-
-	processConfigFile(config.WorkDir, filepath.Join(config.BuildDir, subDir))
+	launchr.Term().Info().Printfln("Preparing %s assets...", pkgPath)
+	pluginDir := fmt.Sprintf(pluginDirTpl, launchr.Version().Name)
+	processConfigFile(config.WorkDir, filepath.Join(config.BuildDir, pluginDir))
 
 	// Prepare the generated plugin with embed assets.
-	launchr.Term().Info().Println("Generating plasmactl-update embed assets go file")
+	launchr.Term().Info().Printfln("Generating %s embed assets go file", pkgPath)
 	type templateVars struct {
 		Pkg        string
-		ClientPath string
+		ConfigPath string
 	}
 	tpl := launchr.Template{Tmpl: pluginTemplate, Data: templateVars{
 		Pkg:        pkgPath,
-		ClientPath: subDir,
+		ConfigPath: filepath.Join(pluginDir, storedConfigName),
 	}}
-	err := tpl.WriteFile(filepath.Join(config.BuildDir, "plasmactl_update_assets.gen.go"))
+
+	assetsFilename := fmt.Sprintf("%s_update_assets.gen.go", launchr.Version().Name)
+	err := tpl.WriteFile(filepath.Join(config.BuildDir, assetsFilename))
 	if err != nil {
 		return err
 	}
@@ -42,8 +46,8 @@ func (p *Plugin) Generate(config launchr.GenerateConfig) error {
 
 // processConfigFile checks for config existence, validates it, and handles file operations
 func processConfigFile(sourceFolder, targetPath string) {
-	localConfig := filepath.Join(sourceFolder, configName)
-	configPath := filepath.Join(targetPath, configName)
+	localConfig := filepath.Join(sourceFolder, fmt.Sprintf(lookupConfigNameTpl, launchr.Version().Name))
+	configPath := filepath.Join(targetPath, storedConfigName)
 
 	// Try to get an existing config file and copy to assets dir.
 	err := getExistingConfig(localConfig, configPath)
@@ -73,7 +77,7 @@ func getExistingConfig(localConfig, configPath string) error {
 		return fmt.Errorf("error copying config file from %s to %s: %v", localConfig, configPath, err)
 	}
 
-	launchr.Term().Printfln("Config file successfully copied from %s to %s", localConfig, configPath)
+	launchr.Log().Debug(fmt.Sprintf("Config file successfully copied from %s to %s", localConfig, configPath))
 
 	return nil
 }
@@ -103,7 +107,7 @@ func copyFile(src, dst string) error {
 func createDefaultConfigFile(path string) {
 	defaultConfig := &config{
 		RepositoryURL: "",
-		LatestStable:  "",
+		PinnedRelease: "",
 		BinMask:       "",
 	}
 
@@ -136,10 +140,10 @@ import (
 	update "{{.Pkg}}"
 )
 
-//go:embed {{.ClientPath}}/plasmactl-update.yaml
-var plasmactlUpdateConfig []byte
+//go:embed {{.ConfigPath}}
+var launchrUpdateConfig []byte
 
 func init() {
-	_ = update.LoadConfigFromBytesAndSet(plasmactlUpdateConfig)
+	_ = update.LoadConfigFromBytesAndSet(launchrUpdateConfig)
 }
 `

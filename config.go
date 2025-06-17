@@ -12,7 +12,7 @@ import (
 
 type config struct {
 	RepositoryURL string `yaml:"repository_url"`
-	LatestStable  string `yaml:"latest_stable"`
+	PinnedRelease string `yaml:"pinned_release_file"`
 	BinMask       string `yaml:"bin_mask"`
 }
 

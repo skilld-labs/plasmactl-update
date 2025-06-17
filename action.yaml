@@ -15,3 +15,7 @@ action:
       title: Config file
       description: Use specified config with metadata for update
       default: ""
+    - name: target
+      title: Target version
+      description: Specific version to install
+      default: ""
