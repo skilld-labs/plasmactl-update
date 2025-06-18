@@ -5,8 +5,9 @@ go 1.24.0
 toolchain go1.24.1
 
 require (
-	github.com/launchrctl/keyring v0.5.0
-	github.com/launchrctl/launchr v0.21.0
+	github.com/launchrctl/keyring v0.6.0
+	github.com/launchrctl/launchr v0.21.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -95,7 +96,6 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/api v0.33.0 // indirect
 	k8s.io/apimachinery v0.33.0 // indirect
 	k8s.io/client-go v0.33.0 // indirect

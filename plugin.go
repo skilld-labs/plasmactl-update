@@ -4,7 +4,6 @@ package plasmactlupdate
 import (
 	"context"
 	_ "embed"
-	"fmt"
 
 	"github.com/launchrctl/keyring"
 	"github.com/launchrctl/launchr"
@@ -42,7 +41,7 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 	a.SetRuntime(action.NewFnRuntime(func(_ context.Context, a *action.Action) error {
 		input := a.Input()
 		ci := keyring.CredentialsItem{
-			URL:      baseURL,
+			URL:      "",
 			Username: input.Opt("username").(string),
 			Password: input.Opt("password").(string),
 		}
@@ -57,77 +56,29 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 			term = rt.Term()
 		}
 
-		u, err := createUpdateAction(p.k, ci)
+		cmd, err := getUpdateCmd()
 		if err != nil {
 			return err
+		}
+
+		u := &updateAction{
+			k:             p.k,
+			credentials:   ci,
+			sudoCmd:       cmd,
+			cfg:           getUpdateConfig(),
+			externalCfg:   input.Opt("config").(string),
+			targetVersion: input.Opt("target").(string),
 		}
 		u.SetLogger(log)
 		u.SetTerm(term)
 
-		return runUpdate(u)
+		err = u.doRun()
+		if err != nil {
+			u.Term().Error().Println("Update failed")
+			u.cleanup()
+		}
+
+		return err
 	}))
 	return []*action.Action{a}, nil
-}
-
-// runUpdate command entrypoint.
-func runUpdate(u *updateAction) error {
-	// Wrapper to conclude errors.
-	if err := runCommands(u); err != nil {
-		u.exitWithError()
-		return err
-	}
-
-	return nil
-}
-
-// runCommands run commands one by one.
-func runCommands(u *updateAction) error {
-	version := launchr.Version()
-	u.Term().Info().Printfln("Starting %s installation...", version.Name)
-
-	currOS, arch, err := u.initVars()
-	if err != nil {
-		return err
-	}
-
-	// Check the validity of the credentials.
-	if err = u.validateCredentials(); err != nil {
-		return err
-	}
-
-	// Get value of Stable Release.
-	stableRelease, err := u.getStableRelease()
-	if err != nil {
-		return err
-	}
-
-	if isUpToDate(stableRelease) {
-		u.Term().Printfln("Current version of %s is up to date.", version.Name)
-		return nil
-	}
-
-	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	u.c.URL = fmt.Sprintf(binPathMask, baseURL, stableRelease, currOS, arch, u.ext)
-	u.Term().Printfln("Downloading file: %s", u.c.URL)
-
-	// Download file to the temp folder.
-	if err = u.downloadFile(); err != nil {
-		return err
-	}
-
-	u.Log().Debug("binary path", "path", u.fPath)
-
-	if err = u.installFile(u.fDir); err != nil {
-		return err
-	}
-
-	// Outro.
-	u.Term().Success().Printfln("%s has been installed successfully.", u.fName)
-	return nil
-}
-
-// isUpToDate check is current installed version of plasmactl is not up-to-date.
-func isUpToDate(stableRelease string) bool {
-	version := launchr.Version()
-	return version.Version == stableRelease
 }
