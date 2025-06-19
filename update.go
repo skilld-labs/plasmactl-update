@@ -38,7 +38,6 @@ type updateAction struct {
 	k keyring.Keyring
 
 	cfg           *config
-	externalCfg   string
 	targetVersion string
 
 	// runtime vars.
@@ -114,23 +113,7 @@ func (u *updateAction) initVars() error {
 	}
 
 	// Get the machine architecture.
-	u.arch, err = getArch()
-	if err != nil {
-		if errors.Is(err, errUnsupportedArch) {
-			u.Term().Printfln("Unsupported architecture: %s", u.arch)
-		}
-
-		return err
-	}
-
-	// Check if the user submitted a custom config file.
-	if u.externalCfg != "" {
-		cfgExternal, err := parseConfigFromPath(u.externalCfg)
-		if err != nil {
-			return fmt.Errorf("error parsing external config file %s: %v", u.externalCfg, err)
-		}
-		u.cfg = cfgExternal
-	}
+	u.arch = getArch()
 
 	if u.cfg == nil {
 		return fmt.Errorf("update config is not set, use --config flag or build launchr with predefined config")
@@ -282,8 +265,16 @@ func (u *updateAction) sendRequest(url string) (*http.Response, error) {
 
 // getStableRelease send request and get a stable release version.
 func (u *updateAction) getStableRelease() (string, error) {
-	stableReleaseURL := fmt.Sprintf("%s/%s", u.credentials.URL, u.cfg.PinnedRelease)
-	resp, err := u.sendRequest(stableReleaseURL)
+	vars := templateVars{
+		URL: u.credentials.URL,
+	}
+
+	releaseURL, err := formatURL(u.cfg.PinnedRelease, vars)
+	if err != nil {
+		return "", fmt.Errorf("failed to format release URL: %w", err)
+	}
+
+	resp, err := u.sendRequest(releaseURL)
 
 	if err != nil {
 		return "", err
@@ -305,10 +296,21 @@ func (u *updateAction) getStableRelease() (string, error) {
 // downloadFile Download the file using with Basic Auth header.
 func (u *updateAction) downloadFile(version string) error {
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	url := fmt.Sprintf(u.cfg.BinMask, u.credentials.URL, version, u.os, u.arch, u.ext)
-	u.Term().Printfln("Downloading file: %s", url)
+	vars := templateVars{
+		URL:     u.credentials.URL,
+		Version: version,
+		OS:      u.os,
+		Arch:    u.arch,
+		Ext:     u.ext,
+	}
 
-	resp, err := u.sendRequest(url)
+	fileURL, err := formatURL(u.cfg.BinMask, vars)
+	if err != nil {
+		return fmt.Errorf("failed to format download URL: %w", err)
+	}
+
+	u.Term().Printfln("Downloading file: %s", fileURL)
+	resp, err := u.sendRequest(fileURL)
 	if err != nil {
 		return err
 	}
@@ -316,7 +318,7 @@ func (u *updateAction) downloadFile(version string) error {
 
 	// Check if a file exists based on the status code
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("file not found: %s", url)
+		return fmt.Errorf("file not found: %s", fileURL)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -444,17 +446,20 @@ func getOS() (os string, err error) {
 	if os != "linux" && os != "darwin" {
 		return os, errUnsupportedOS
 	}
+	os = strings.ToUpper(os[:1]) + os[1:]
 	return os, nil
 }
 
 // getArch get OS arch.
-func getArch() (arch string, err error) {
-	arch = runtime.GOARCH
-	if arch == "amd64" || arch == "386" || arch == "arm64" {
-		return arch, nil
+func getArch() string {
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x86_64"
+	} else if arch == "386" {
+		arch = "i386"
 	}
 
-	return arch, errUnsupportedArch
+	return arch
 }
 
 func isCommandAvailable(name string) (bool, string) {

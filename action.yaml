@@ -11,11 +11,23 @@ action:
       title: Password
       type: string
       default: ""
+    - name: target
+      title: Target version
+      description: Specific version to install
+      default: ""
     - name: config
       title: Config file
       description: Use specified config with metadata for update
       default: ""
-    - name: target
+    - name: repository-url
+      title: Repository URL
+      description: URL do download binary from
+      default: ""
+    - name: release-file-mask
       title: Target version
-      description: Specific version to install
+      description: Specify URL for pinned release file. Available template vars are [URL, Version, OS, Arch, Ext]. Example - {{.URL}}/release
+      default: ""
+    - name: bin-mask
+      title: Binary file mask
+      description: Specify URL download mask for binary. Available template vars are [URL, Version, OS, Arch, Ext] Example - {{.URL}}/{{.OS}}
       default: ""
