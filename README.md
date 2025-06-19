@@ -1,2 +1,2 @@
-# plasmactl-update
-Launchrctl plugin to fetch and install latest version of plasmactl
+# launchr-update
+Launchrctl plugin to fetch and install a latest version of launchr

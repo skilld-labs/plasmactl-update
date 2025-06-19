@@ -361,7 +361,7 @@ func (u *updateAction) installFile(dirPath string) error {
 		sudoRequired = true
 	}
 
-	// Copy temp file in the plasmactl folder.
+	// Copy a temp file in the binary folder.
 	src, err := os.Open(u.fTmpPath)
 	if err != nil {
 		return err
@@ -375,7 +375,7 @@ func (u *updateAction) installFile(dirPath string) error {
 		}
 
 		pathPerm := fmt.Sprintf("%04o", info.Mode().Perm())
-		// Set temp permissions for the folder with plasmactl.
+		// Set temp permissions for the folder.
 		if err = u.setPermissions("777", u.fDir, sudoRequired); err != nil {
 			return err
 		}
@@ -399,12 +399,12 @@ func (u *updateAction) installFile(dirPath string) error {
 		return err
 	}
 
-	// Rename temp file to plasmactl.
+	// Rename a temp file to the original binary name.
 	if err = os.Rename(fTmpName, u.fPath); err != nil {
 		return err
 	}
 
-	// Set plasmactl permissions.
+	// Set binary permissions.
 	if err = u.setPermissions("755", u.fPath, sudoRequired); err != nil {
 		return err
 	}

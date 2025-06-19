@@ -1,7 +1,7 @@
 runtime: plugin
 action:
   title: Update
-  description: "Command to fetch and install the latest version of plasmactl"
+  description: "Command to fetch and install the latest version of binary"
   options:
     - name: username
       title: Username
