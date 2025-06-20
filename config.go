@@ -1,13 +1,21 @@
 package plasmactlupdate
 
 import (
+	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
+	"text/template"
 
 	"github.com/launchrctl/launchr"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	defaultPinnedReleaseTpl = "{{.URL}}/stable_release"
+	defaultBinTpl           = "{{.URL}}/{{.Version}}/launchr_{{.OS}}_{{.Arch}}{{.Ext}}"
 )
 
 type config struct {
@@ -24,9 +32,13 @@ func SetUpdateConfig(cfg *config) {
 	updateConfig = cfg
 }
 
-// GetDefaultConfig returns the global default configuration
+// GetDefaultConfig returns the global default configuration copy
 func getUpdateConfig() *config {
-	return updateConfig
+	if updateConfig == nil {
+		return &config{}
+	}
+	cfgCopy := *updateConfig
+	return &cfgCopy
 }
 
 // LoadConfigFromBytesAndSet parses the configuration from a byte slice and sets it as the global default configuration.
@@ -68,21 +80,69 @@ func parseConfigFromBytes(data []byte) (*config, error) {
 
 // validateConfig checks if all fields are filled and not empty
 func validateConfig(cfg *config) error {
-	v := reflect.ValueOf(cfg).Elem()
-	t := reflect.TypeOf(cfg).Elem()
+	if cfg.RepositoryURL == "" {
+		return fmt.Errorf("field 'repository_url' is required and cannot be empty")
+	}
 
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		fieldType := t.Field(i)
+	return nil
+}
 
-		// Check if field is empty
-		if field.Kind() == reflect.String && field.String() == "" {
-			yamlTag := fieldType.Tag.Get("yaml")
-			if yamlTag == "" {
-				yamlTag = fieldType.Name
-			}
-			return fmt.Errorf("field '%s' is required and cannot be empty", yamlTag)
-		}
+type templateVars struct {
+	URL     string
+	Version string
+	OS      string
+	Arch    string
+	Ext     string
+}
+
+// formatURL formats a template string with the provided variables
+func formatURL(templateStr string, vars templateVars) (string, error) {
+	tmpl, err := template.New("url").Parse(templateStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, vars)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	result := strings.TrimSpace(buf.String())
+
+	// Validate the resulting URL
+	if err = validateURL(result); err != nil {
+		return "", fmt.Errorf("invalid URL generated from template: %w", err)
+	}
+
+	return result, nil
+}
+
+// validateURL checks if the URL is valid and doesn't contain unwanted characters
+func validateURL(rawURL string) error {
+	// Check for newlines, tabs, and other control characters
+	if strings.ContainsAny(rawURL, "\n\r\t\v\f") {
+		return fmt.Errorf("URL contains invalid control characters")
+	}
+
+	// Parse the URL to ensure it's valid
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	// Check if scheme is present and valid
+	if parsedURL.Scheme == "" {
+		return fmt.Errorf("URL missing scheme (http/https)")
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("invalid URL scheme: %s (expected http or https)", parsedURL.Scheme)
+	}
+
+	// Check if host is present
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL missing host")
 	}
 
 	return nil

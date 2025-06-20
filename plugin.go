@@ -4,6 +4,7 @@ package plasmactlupdate
 import (
 	"context"
 	_ "embed"
+	"fmt"
 
 	"github.com/launchrctl/keyring"
 	"github.com/launchrctl/launchr"
@@ -61,12 +62,45 @@ func (p *Plugin) DiscoverActions(_ context.Context) ([]*action.Action, error) {
 			return err
 		}
 
+		var cfg *config
+		// Check if the user submitted a custom config file.
+		externalCfg := input.Opt("config").(string)
+		if externalCfg != "" {
+			cfgExternal, err := parseConfigFromPath(externalCfg)
+			if err != nil {
+				return fmt.Errorf("error parsing external config file %s: %v", externalCfg, err)
+			}
+			cfg = cfgExternal
+		} else {
+			cfg = getUpdateConfig()
+			// Update the config with the user input if present.
+			repoURL := input.Opt("repository-url").(string)
+			if repoURL != "" {
+				cfg.RepositoryURL = repoURL
+			}
+			pinnedRelease := input.Opt("release-file-mask").(string)
+			if pinnedRelease != "" {
+				cfg.PinnedRelease = pinnedRelease
+			}
+			binMask := input.Opt("bin-mask").(string)
+			if binMask != "" {
+				cfg.BinMask = binMask
+			}
+		}
+
+		// Fallback to default config values if they are empty.
+		if cfg.PinnedRelease == "" {
+			cfg.PinnedRelease = defaultPinnedReleaseTpl
+		}
+		if cfg.BinMask == "" {
+			cfg.BinMask = defaultBinTpl
+		}
+
 		u := &updateAction{
 			k:             p.k,
 			credentials:   ci,
 			sudoCmd:       cmd,
-			cfg:           getUpdateConfig(),
-			externalCfg:   input.Opt("config").(string),
+			cfg:           cfg,
 			targetVersion: input.Opt("target").(string),
 		}
 		u.SetLogger(log)
