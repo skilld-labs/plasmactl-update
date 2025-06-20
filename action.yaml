@@ -24,10 +24,10 @@ action:
       description: URL do download binary from
       default: ""
     - name: release-file-mask
-      title: Target version
-      description: Specify URL for pinned release file. Available template vars are [URL, Version, OS, Arch, Ext]. Example - {{.URL}}/release
+      title: Release file mask
+      description: Specify URL for pinned release file with version. Available template vars are [URL, Version, OS, Arch, Ext]. Example - {{.URL}}/release
       default: ""
     - name: bin-mask
       title: Binary file mask
-      description: Specify URL download mask for binary. Available template vars are [URL, Version, OS, Arch, Ext] Example - {{.URL}}/{{.OS}}
+      description: Specify URL download mask for binary. Available template vars are [URL, Version, OS, Arch, Ext] Example - {{.URL}}/{{.Version}}
       default: ""
