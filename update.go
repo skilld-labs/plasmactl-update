@@ -52,6 +52,7 @@ type updateAction struct {
 	fPath        string
 	fDir         string
 	sudoCmd      string
+	appName      string
 	os           string
 	arch         string
 	requiresAuth bool
@@ -104,6 +105,8 @@ func (u *updateAction) doRun() error {
 // initVars initialize plugin variables.
 func (u *updateAction) initVars() error {
 	var err error
+
+	u.appName = launchr.Version().Name
 
 	// Get the operating system type.
 	u.os, err = getOS()
@@ -291,7 +294,11 @@ func (u *updateAction) checkResponseStatus(r *http.Response) error {
 // getStableRelease send request and get a stable release version.
 func (u *updateAction) getStableRelease() (string, error) {
 	vars := templateVars{
-		URL: u.credentials.URL,
+		URL:  u.credentials.URL,
+		Name: u.appName,
+		OS:   u.os,
+		Arch: u.arch,
+		Ext:  u.ext,
 	}
 
 	releaseURL, err := formatURL(u.cfg.PinnedRelease, vars)
@@ -322,6 +329,7 @@ func (u *updateAction) downloadFile(version string) error {
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
 	vars := templateVars{
 		URL:     u.credentials.URL,
+		Name:    u.appName,
 		Version: version,
 		OS:      u.os,
 		Arch:    u.arch,

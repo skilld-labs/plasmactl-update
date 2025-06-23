@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultPinnedReleaseTpl = "{{.URL}}/stable_release"
-	defaultBinTpl           = "{{.URL}}/{{.Version}}/launchr_{{.OS}}_{{.Arch}}{{.Ext}}"
+	defaultBinTpl           = "{{.URL}}/{{.Version}}/{{.Name}}_{{.OS}}_{{.Arch}}{{.Ext}}"
 )
 
 type config struct {
@@ -89,6 +89,7 @@ func validateConfig(cfg *config) error {
 
 type templateVars struct {
 	URL     string
+	Name    string
 	Version string
 	OS      string
 	Arch    string
