@@ -19,10 +19,14 @@ import (
 // Errors.
 var (
 	errUnsupportedOS    = errors.New("unsupported operating system")
-	errUnsupportedArch  = errors.New("unsupported architecture")
-	errInvalidCreds     = errors.New("failed to validate credentials")
 	errMalformedKeyring = errors.New("the keyring is malformed or wrong passphrase provided")
 )
+
+// archMap maps Go architecture strings to their corresponding common architecture names.
+var archMap = map[string]string{
+	"amd64": "x86_64",
+	"386":   "i386",
+}
 
 const (
 	sudoCmd  = "sudo"
@@ -38,19 +42,20 @@ type updateAction struct {
 	k keyring.Keyring
 
 	cfg           *config
-	externalCfg   string
 	targetVersion string
 
 	// runtime vars.
-	credentials keyring.CredentialsItem
-	ext         string
-	fName       string
-	fTmpPath    string
-	fPath       string
-	fDir        string
-	sudoCmd     string
-	os          string
-	arch        string
+	credentials  keyring.CredentialsItem
+	ext          string
+	fName        string
+	fTmpPath     string
+	fPath        string
+	fDir         string
+	sudoCmd      string
+	appName      string
+	os           string
+	arch         string
+	requiresAuth bool
 }
 
 func (u *updateAction) doRun() error {
@@ -60,11 +65,6 @@ func (u *updateAction) doRun() error {
 
 	err := u.initVars()
 	if err != nil {
-		return err
-	}
-
-	// Check the validity of the credentials.
-	if err = u.validateCredentials(); err != nil {
 		return err
 	}
 
@@ -106,6 +106,8 @@ func (u *updateAction) doRun() error {
 func (u *updateAction) initVars() error {
 	var err error
 
+	u.appName = launchr.Version().Name
+
 	// Get the operating system type.
 	u.os, err = getOS()
 	if err != nil {
@@ -114,23 +116,7 @@ func (u *updateAction) initVars() error {
 	}
 
 	// Get the machine architecture.
-	u.arch, err = getArch()
-	if err != nil {
-		if errors.Is(err, errUnsupportedArch) {
-			u.Term().Printfln("Unsupported architecture: %s", u.arch)
-		}
-
-		return err
-	}
-
-	// Check if the user submitted a custom config file.
-	if u.externalCfg != "" {
-		cfgExternal, err := parseConfigFromPath(u.externalCfg)
-		if err != nil {
-			return fmt.Errorf("error parsing external config file %s: %v", u.externalCfg, err)
-		}
-		u.cfg = cfgExternal
-	}
+	u.arch = getArch()
 
 	if u.cfg == nil {
 		return fmt.Errorf("update config is not set, use --config flag or build launchr with predefined config")
@@ -144,10 +130,21 @@ func (u *updateAction) initVars() error {
 
 	// Set URL for credentials item.
 	u.credentials.URL = u.cfg.RepositoryURL
+	authRequired, err := u.checkAuthRequired(u.credentials.URL)
+	if err != nil {
+		u.Log().Debug("failed to check auth requirement, proceeding without auth", "error", err)
+		authRequired = false // Proceed without requiring auth
+	}
 
-	// Get username and password.
-	if err = u.getCredentials(); err != nil {
-		return err
+	u.requiresAuth = authRequired
+	u.Log().Debug("repository auth requirement", "requires_auth", u.requiresAuth)
+
+	// Only get credentials if auth is required
+	if u.requiresAuth {
+		// Get username and password.
+		if err = u.getCredentials(); err != nil {
+			return err
+		}
 	}
 
 	// Prepare binary paths
@@ -222,6 +219,7 @@ func (u *updateAction) getCredentials() error {
 
 		if u.k.Exists() {
 			err = u.k.Save()
+			u.k.ResetStorage()
 		}
 	}
 
@@ -229,36 +227,26 @@ func (u *updateAction) getCredentials() error {
 	return err
 }
 
-// validateCredentials make request to validate credentials and return HTTP status code.
-func (u *updateAction) validateCredentials() error {
-	// validate via access to a stable release.
-	r, err := u.sendRequest(fmt.Sprintf("%s/%s", u.credentials.URL, u.cfg.PinnedRelease))
+// checkAuthRequired determines if the repository requires authentication
+func (u *updateAction) checkAuthRequired(url string) (bool, error) {
+	client := &http.Client{}
+
+	// Test with a simple HEAD request to the base repository URL
+	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-
-	switch r.StatusCode {
-	case 0:
-		u.Term().Error().Println("Failed to validate credentials. Access denied.")
-		return errInvalidCreds
-	case 200:
-		u.Term().Success().Println("Valid credentials. Access granted.")
-	case 401:
-		u.Term().Error().Printfln("HTTP %d: Unauthorized. Credentials seems to be invalid.", r.StatusCode)
-		return errInvalidCreds
-	case 404:
-		u.Term().Error().Printfln("HTTP %d: Not Found. File %s does not exist.", r.StatusCode, u.credentials.URL)
-		return errInvalidCreds
-	default:
-		u.Term().Error().Printfln(
-			"HTTP %d. An issue appeared while trying to validate credentials against %s.",
-			r.StatusCode,
-			u.credentials.URL,
-		)
+		return false, err
 	}
 
-	return nil
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	u.Log().Debug("auth check response", "url", url, "status_code", resp.StatusCode)
+
+	// If we get 401 or 403, authentication is likely required
+	return resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden, nil
 }
 
 // sendRequest send HTTP request, make authorization and return response.
@@ -269,22 +257,56 @@ func (u *updateAction) sendRequest(url string) (*http.Response, error) {
 		return nil, err
 	}
 
-	req.SetBasicAuth(u.credentials.Username, u.credentials.Password)
+	// Only set auth if required and we have credentials
+	if u.requiresAuth && u.credentials.Username != "" && u.credentials.Password != "" {
+		req.SetBasicAuth(u.credentials.Username, u.credentials.Password)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
 	u.Log().Debug("request response", "url", url, "status", resp.Status, "status_code", resp.StatusCode, "method", req.Method)
+	if err = u.checkResponseStatus(resp); err != nil {
+		return nil, err
+	}
 
 	return resp, nil
 }
 
+func (u *updateAction) checkResponseStatus(r *http.Response) error {
+	if r.StatusCode == http.StatusOK {
+		return nil
+	}
+	var err error
+	switch r.StatusCode {
+	case http.StatusUnauthorized:
+		err = fmt.Errorf("HTTP %d: Unauthorized. Credentials seems to be invalid", r.StatusCode)
+	case http.StatusNotFound:
+		err = fmt.Errorf("HTTP %d: Not Found. File %s does not exist", r.StatusCode, r.Request.URL.Path)
+	default:
+		err = fmt.Errorf("an issue appeared while trying to make request to %s", r.Request.URL.Path)
+	}
+
+	return err
+}
+
 // getStableRelease send request and get a stable release version.
 func (u *updateAction) getStableRelease() (string, error) {
-	stableReleaseURL := fmt.Sprintf("%s/%s", u.credentials.URL, u.cfg.PinnedRelease)
-	resp, err := u.sendRequest(stableReleaseURL)
+	vars := templateVars{
+		URL:  u.credentials.URL,
+		Name: u.appName,
+		OS:   u.os,
+		Arch: u.arch,
+		Ext:  u.ext,
+	}
 
+	releaseURL, err := formatURL(u.cfg.PinnedRelease, vars)
+	if err != nil {
+		return "", fmt.Errorf("failed to format release URL: %w", err)
+	}
+
+	resp, err := u.sendRequest(releaseURL)
 	if err != nil {
 		return "", err
 	}
@@ -305,23 +327,26 @@ func (u *updateAction) getStableRelease() (string, error) {
 // downloadFile Download the file using with Basic Auth header.
 func (u *updateAction) downloadFile(version string) error {
 	// Format the URL with the determined 'os', 'arch' and 'extension' values.
-	url := fmt.Sprintf(u.cfg.BinMask, u.credentials.URL, version, u.os, u.arch, u.ext)
-	u.Term().Printfln("Downloading file: %s", url)
+	vars := templateVars{
+		URL:     u.credentials.URL,
+		Name:    u.appName,
+		Version: version,
+		OS:      u.os,
+		Arch:    u.arch,
+		Ext:     u.ext,
+	}
 
-	resp, err := u.sendRequest(url)
+	fileURL, err := formatURL(u.cfg.BinMask, vars)
+	if err != nil {
+		return fmt.Errorf("failed to format download URL: %w", err)
+	}
+
+	u.Term().Printfln("Downloading file: %s", fileURL)
+	resp, err := u.sendRequest(fileURL)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
-	// Check if a file exists based on the status code
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("file not found: %s", url)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("request failed with status: %d %s", resp.StatusCode, resp.Status)
-	}
 
 	out, err := os.Create(u.fTmpPath)
 	if err != nil {
@@ -444,17 +469,18 @@ func getOS() (os string, err error) {
 	if os != "linux" && os != "darwin" {
 		return os, errUnsupportedOS
 	}
+	os = strings.ToUpper(os[:1]) + os[1:]
 	return os, nil
 }
 
 // getArch get OS arch.
-func getArch() (arch string, err error) {
-	arch = runtime.GOARCH
-	if arch == "amd64" || arch == "386" || arch == "arm64" {
-		return arch, nil
+func getArch() string {
+	arch, ok := archMap[runtime.GOARCH]
+	if !ok {
+		arch = runtime.GOARCH // Fallback to the raw value if no mapping exists
 	}
 
-	return arch, errUnsupportedArch
+	return arch
 }
 
 func isCommandAvailable(name string) (bool, string) {
